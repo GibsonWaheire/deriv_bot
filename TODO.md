@@ -5,304 +5,441 @@
 ---
 
 ## Core Vision
-**A self-contained trading terminal.** The user never needs to open Deriv.
-- The app fetches live tick data from Deriv in real time
-- AI analyzes thousands of historical ticks per symbol every tick
-- When confidence is high enough, a signal fires: "Digit 3, Match, 5 ticks — 71% confidence"
-- User clicks TRADE — the app sends the order directly to Deriv via API, accounting for server RTT
-- AI can also run fully autonomously: detect signal → time the entry → place the trade → log outcome
-- Everything — analysis, execution, journal, P&L — is inside this app
+**A self-contained trading terminal. User never opens Deriv.**
+- App fetches live tick data from Deriv in real time
+- AI analyzes thousands of historical ticks every tick
+- When confidence clears threshold a signal fires: "Digit 3 · MATCH · 2 ticks · 71%"
+- User clicks TRADE — backend times the entry to the exact tick, fires order to Deriv via API
+- AI auto-mode: detect signal → time entry → place trade → log outcome — fully autonomous
+- Everything inside this app: analysis, execution, journal, P&L, balance
 
 ---
 
 ## Current Status
-**Phase 2 complete** — Deriv OAuth2 login (token verified via WS, JWT issued). Dev bypass live.
-**Next:** Phase 3 — AI signal engine with timing-aware trade execution.
+**Phase 2 complete** — Legacy OAuth login (token verified via WS authorize, JWT issued).
+**⚠ Phase 2 needs upgrade** — New Deriv API uses OAuth2 PKCE + OTP. See Phase 2B below.
+**Next:** Phase 3 — AI signal engine + timing-aware execution.
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind · FastAPI · Redis · Claude API
 
 ---
 
-## API Reference (Deriv)
+## Full Deriv API Reference (from llms.txt — confirmed)
 
-### WebSocket (primary channel)
-- Legacy WS: `wss://ws.binaryws.com/websockets/v3?app_id=APP_ID`
-- New WS: `wss://api.derivws.com/trading/v1/options/ws/{demo|real}` (OTP authenticated)
-- Public WS (no auth): `wss://api.derivws.com/trading/v1/options/ws/public`
+### OAuth2 PKCE Flow (NEW — required for new API)
+```
+1. Generate: code_verifier (random 43-128 chars), code_challenge = BASE64URL(SHA256(verifier)), state (CSRF)
+2. Store in sessionStorage: pkce_code_verifier, oauth_state
+3. Redirect user → https://auth.deriv.com/oauth2/auth?
+       response_type=code
+       &client_id=YOUR_CLIENT_ID        ← from Deriv dashboard (different from APP_ID)
+       &redirect_uri=https://yourapp.com/auth/callback
+       &scope=trade
+       &state=RANDOM_STATE
+       &code_challenge=PKCE_CHALLENGE
+       &code_challenge_method=S256
+4. Callback receives: ?code=AUTH_CODE&state=STATE
+5. Backend exchanges: POST https://auth.deriv.com/oauth2/token
+       grant_type=authorization_code
+       &client_id=YOUR_CLIENT_ID
+       &code=AUTH_CODE
+       &code_verifier=ORIGINAL_VERIFIER
+       &redirect_uri=https://yourapp.com/auth/callback
+   → returns: { access_token: "ory_at_...", expires_in: 3600 }
+6. REST: GET https://api.derivws.com/trading/v1/options/accounts
+       Authorization: Bearer access_token
+       Deriv-App-ID: YOUR_APP_ID
+   → get account_id (e.g. "DOT90004580" demo, "CR90004580" real)
+7. REST: POST https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp
+       Authorization: Bearer access_token
+       Deriv-App-ID: YOUR_APP_ID
+   → returns: { data: { url: "wss://api.derivws.com/trading/v1/options/ws/demo?otp=abc123" } }
+8. Connect WebSocket: new WebSocket(otpData.url)  ← already authenticated, NO authorize step
+```
 
-### Key WS Messages
-- `ticks` + `ticks_history` — live feed + 5000 historical prices per symbol
-- `proposal` (subscribable) — real payout quote: stake → payout, updates each tick
-- `buy` — place the trade using a proposal_id
-- `proposal_open_contract` — track live contract P&L tick by tick
-- `transaction` — fires when contract settles (WIN/LOSS detected automatically)
-- `balance` — real-time account balance
-- `profit_table` — full trade history from Deriv (no localStorage needed)
-- `auto_start` / `auto_pause` / `auto_resume` / `auto_stop` — Deriv's automation API
+### Sign Up URL (affiliate tracking built-in)
+```
+https://auth.deriv.com/oauth2/auth?
+  response_type=code
+  &client_id=YOUR_CLIENT_ID
+  &redirect_uri=https://yourapp.com/auth/callback
+  &scope=trade
+  &state=STATE
+  &code_challenge=CHALLENGE
+  &code_challenge_method=S256
+  &prompt=registration           ← shows signup form instead of login
+  &sidc=YOUR_SESSION_GUID        ← from Deriv partner dashboard
+  &utm_campaign=YOUR_CAMPAIGN
+  &utm_medium=affiliate
+  &utm_source=YOUR_AFFILIATE_ID  ← e.g. CU303219
+```
 
-### Digit Contract Types (used in `proposal`)
-- `DIGITMATCH` + `barrier: "N"` — last digit = N (1–5 tick duration)
-- `DIGITDIFF` + `barrier: "N"` — last digit ≠ N
-- `DIGITEVEN` — last digit is even
-- `DIGITODD` — last digit is odd
-- `DIGITOVER` + `barrier: "N"` — last digit > N
-- `DIGITUNDER` + `barrier: "N"` — last digit < N
+### WebSocket Endpoints (29 total — all confirmed with exact request/response)
+
+#### Account (auth required)
+- `balance` — `{ balance:1, subscribe:1 }` → `{ balance: { balance:10092, currency:"USD", loginid:"VRTC..." } }`
+- `portfolio` — `{ portfolio:1 }` → open contracts list
+- `profit_table` — `{ profit_table:1, limit:25, offset:0, description:1 }` → completed trade history
+- `statement` — `{ statement:1, limit:100 }` → full transaction history
+- `transaction` — `{ transaction:1, subscribe:1 }` → real-time trade notifications (WIN/LOSS detected here)
+
+#### Market Data (no auth)
+- `active_symbols` — `{ active_symbols:"brief" }` → all tradeable symbols with pip_size
+- `contracts_for` — `{ contracts_for:"1HZ100V" }` → available contract types per symbol
+- `ticks` — `{ ticks:"1HZ100V", subscribe:1 }` → `{ tick: { ask, bid, epoch, pip_size, quote, symbol } }`
+- `ticks_history` — `{ ticks_history:"1HZ100V", end:"latest", count:5000, style:"ticks" }` → prices[], times[]
+  - `style:"candles"` + `granularity:60` → OHLC candles (60s, 120, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400)
+
+#### Trading (auth required)
+- `proposal` — get payout quote:
+  ```json
+  { "proposal":1, "amount":10, "basis":"stake", "contract_type":"DIGITMATCH",
+    "currency":"USD", "duration":5, "duration_unit":"t",
+    "underlying_symbol":"1HZ100V", "barrier":"3", "subscribe":1 }
+  ```
+  Response: `{ proposal: { id:"abc123", ask_price:10.50, payout:19.90, spot:5123.44, longcode:"..." } }`
+  - `id` is the proposal_id → pass to `buy`
+  - `subscribe:1` → quote updates every tick automatically
+  - supports `limit_order: { stop_loss, take_profit }` for MULTUP/MULTDOWN/ACCU
+
+- `buy` — execute trade:
+  ```json
+  { "buy":"abc123", "price":10.50, "subscribe":1 }
+  ```
+  Response: `{ buy: { balance_after, buy_price, contract_id, payout, purchase_time, transaction_id } }`
+  - `subscribe:1` → automatically streams `proposal_open_contract` updates after purchase
+
+- `sell` — early exit: `{ "sell":12345678, "price":0 }` (price:0 = sell at market)
+- `proposal_open_contract` — monitor live P&L: `{ proposal_open_contract:1, contract_id:123, subscribe:1 }`
+- `contract_update` — set stop_loss/take_profit: `{ contract_update:1, contract_id:123, limit_order:{ stop_loss:5, take_profit:15 } }`
+- `cancel` — cancel contract (if cancellation available): `{ cancel:12345678 }`
+
+#### Automation (auth required, scope: trade)
+- `auto_list_strategies` — `{ auto_list_strategies:1 }` → list built-in strategies (no auth needed)
+- `auto_start`:
+  ```json
+  { "auto_start":1, "contract_template":{ "contract_type":"CALL", "currency":"USD",
+    "underlying_symbol":"R_100", "duration":5, "duration_unit":"t", "amount":10 },
+    "strategy_id":"martingale", "strategy_parameters":{}, "subscribe":1 }
+  ```
+- `auto_get` — `{ auto_get:1, run_id:"run_123", subscribe:1 }` → live run stats
+- `auto_list` — `{ auto_list:1 }` → all runs for account
+- `auto_pause` / `auto_resume` / `auto_stop` — `{ auto_pause:1, run_id:"run_123" }`
+
+#### Subscriptions
+- `forget` — `{ forget:"subscription_id" }` — cancel one subscription
+- `forget_all` — `{ forget_all:["ticks","proposal"] }` — cancel all of a type
+
+#### System (no auth)
+- `ping` — `{ ping:1 }` → `{ ping:"pong" }`
+- `time` — `{ time:1 }` → `{ time:1234567890 }` (use for RTT measurement)
+- `trading_times` — `{ trading_times:"today" }` → market hours
+
+### REST Endpoints (base: https://api.derivws.com)
+All REST calls need `Deriv-App-ID: YOUR_APP_ID` header + `Authorization: Bearer oauth_token`
+
+- `GET /trading/v1/options/accounts` → list accounts (get account_id for OTP step)
+- `POST /trading/v1/options/accounts` → create demo/real account (currency:USD, group:row)
+- `POST /trading/v1/options/accounts/{id}/reset-demo-balance` → reset demo to $10,000
+- `POST /trading/v1/options/accounts/{id}/otp` → get authenticated WS URL ← critical step
+- `GET /v1/health` → service health check
+- `GET /applications/v1/markup-statistics?date_from=&date_to=` → app markup revenue (track earnings)
+- `POST /trading/v1/options/contracts/bulk-purchase/real` → same trade across up to 100 real accounts
+- `POST /trading/v1/options/contracts/bulk-purchase/demo` → same, demo accounts
+
+### Contract Types (confirmed)
+| Type | Strategy | Win condition |
+|---|---|---|
+| DIGITMATCH | Digit | Last digit = barrier (0–9) |
+| DIGITDIFF | Digit | Last digit ≠ barrier |
+| DIGITEVEN | Digit | Last digit is even |
+| DIGITODD | Digit | Last digit is odd |
+| DIGITOVER | Digit | Last digit > barrier |
+| DIGITUNDER | Digit | Last digit < barrier |
+| CALL | Rise/Fall | Exit spot > entry spot |
+| PUT | Rise/Fall | Exit spot < entry spot |
+| HIGHER | Touch | Spot > barrier |
+| LOWER | Touch | Spot < barrier |
+| MULTUP | Multiplier | Up with multiplier + SL/TP |
+| MULTDOWN | Multiplier | Down with multiplier + SL/TP |
+| ACCU | Accumulator | Stays in range, compounds |
+
+Duration unit: `"t"` = ticks (1–5 for digits), `"s"` = seconds, `"m"` = minutes
+
+### Error Codes
+`AuthorizationRequired`, `InvalidToken`, `RateLimit`, `InputValidationFailed`,
+`ContractNotFound`, `InsufficientBalance`, `ValidationError`, `InternalError`
 
 ### Rate Limits
-- WS: 100 req/sec, max 100 subscriptions, max 5 concurrent connections per user
-- REST: 60 req/min per token — Ping every 25s to keep connection alive
+- WS: 100 req/sec, max 100 subscriptions, max 5 concurrent connections
+- REST: 60 req/min per token
+- Ping every 30s to keep WS alive
+
+---
+
+## What Was Built (Prototype)
+- Vanilla JS: live ticks + 5000 historical ticks, Markov signals, signal cards, trade journal (localStorage)
+- Signal engine: DIGITMATCH (Markov), Even/Odd, Rise/Fall, Over/Under
+
+---
+
+## PHASE 2B — Upgrade Auth to New Deriv API (OAuth2 PKCE)
+> Current implementation uses legacy WS `authorize` flow. New API needs PKCE + OTP.
+> This must be done before Phase 3 so the backend can open authenticated WS connections.
+
+- [ ] Register OAuth2 client at Deriv dashboard → get `CLIENT_ID` (separate from APP_ID)
+- [ ] Add to `.env`: `DERIV_CLIENT_ID`, `DERIV_CLIENT_SECRET` (if needed), `DERIV_REDIRECT_URI`
+- [ ] Frontend: `Login.tsx` — generate PKCE verifier + challenge + state, store in sessionStorage, redirect to `https://auth.deriv.com/oauth2/auth?...`
+- [ ] Frontend: `AuthCallback.tsx` — now receives `?code=&state=` (not `?token1=`) — verify state, send code to backend
+- [ ] Backend: `POST /api/auth/callback` — receives code + verifier → exchanges with `https://auth.deriv.com/oauth2/token` → gets `access_token`
+- [ ] Backend: use access_token → `GET /trading/v1/options/accounts` → get account_id, balance, currency
+- [ ] Backend: `POST /trading/v1/options/accounts/{id}/otp` → get authenticated WS URL
+- [ ] Backend: store `{ access_token, otp_ws_url, account_id }` in Redis keyed by our JWT sub (expires 1hr)
+- [ ] Backend: issue our JWT with `{ deriv_account_id, currency, email }` — same as before
+- [ ] Affiliate signup URL: build with `prompt=registration&utm_source=AFFILIATE_ID&utm_medium=affiliate&sidc=SESSION_GUID`
+- [ ] Commit: `feat: phase 2b - oauth2 pkce + otp ws auth upgrade`
 
 ---
 
 ## PHASE 3 — AI Signal Engine + Timing-Aware Execution
-> Goal: Backend does all analysis. Fires a signal only when confidence clears threshold.
-> Signal includes: digit, strategy, tick duration, entry timing, confidence score.
+> Backend does all analysis. Fires signal only when confidence clears threshold.
+> Signal = { digit, strategy, duration, confidence, entry_window_ms, live_payout }
 
-### 3A — Live Data Client
+### 3A — Deriv Client (new API)
 - [ ] `backend/app/services/deriv_client.py`
-  - [ ] Connect to Deriv WS, authenticate with user token
+  - [ ] `get_authenticated_ws(account_id, access_token)` → fetch OTP from Redis or re-request, return WS URL
+  - [ ] `connect_public_ws()` → `wss://api.derivws.com/trading/v1/options/ws/public` (ticks, no auth)
+  - [ ] `connect_trading_ws(otp_url)` → authenticated WS (buy, balance, portfolio)
   - [ ] `fetch_tick_history(symbol, count=5000)` → prices[], times[]
-  - [ ] `subscribe_ticks(symbol, callback)` — fires on every new tick
-  - [ ] `get_proposal(symbol, contract_type, barrier, duration, stake, token)` → proposal_id, payout, ask_price
-  - [ ] `execute_buy(proposal_id, price, token)` → contract_id
-  - [ ] `subscribe_open_contract(contract_id, callback)` — live P&L per tick
-  - [ ] `subscribe_balance(token, callback)` — real-time balance updates
-  - [ ] `subscribe_transaction(token, callback)` — auto WIN/LOSS detection on contract close
-  - [ ] RTT measurement: send `time` ping before every trade, record latency
-  - [ ] Reconnect with exponential backoff (1s → 2s → 4s → max 30s)
-  - [ ] `forget_all()` cleanup on disconnect
+  - [ ] `subscribe_ticks(symbol, callback)` — live tick stream
+  - [ ] `get_proposal(symbol, contract_type, barrier, duration, stake, ws)` → proposal_id, ask_price, payout
+  - [ ] `execute_buy(proposal_id, ask_price, ws)` → contract_id, purchase_time, balance_after
+  - [ ] `subscribe_open_contract(contract_id, callback, ws)` — live P&L updates
+  - [ ] `subscribe_balance(callback, ws)` — real-time balance
+  - [ ] `subscribe_transaction(callback, ws)` — WIN/LOSS auto-detection
+  - [ ] `sell_contract(contract_id, ws)` → early exit
+  - [ ] `measure_rtt(ws)` — send `{ time:1 }`, measure response latency
+  - [ ] Ping loop every 25s, exponential backoff reconnect (1s → 2s → 4s → max 30s)
+  - [ ] `forget_all(ws)` — cleanup on disconnect
 
 ### 3B — Analysis Engine
 - [ ] `backend/app/services/analysis.py`
-  - [ ] `build_transition_matrix(digits)` → 10×10 Markov matrix (row=current, col=next)
+  - [ ] `build_transition_matrix(digits)` → 10×10 Markov matrix (last digit → next digit probabilities)
   - [ ] `score_digit_match(digits)` → per digit 0–9:
-    - markov probability (from transition matrix, last 3 digits of chain)
-    - frequency deficit (how far below 10% baseline)
-    - gap score (ticks since this digit last appeared — higher gap = stronger signal)
-    - composite score = weighted average of above three
-  - [ ] `score_even_odd(digits)` → pEven, pOdd, current streak length, momentum direction
-  - [ ] `score_rise_fall(prices)` → pRise, pFall, streak reversal probability, volatility regime
-  - [ ] `score_over_under(digits)` → best threshold 1–8, probability per threshold
-  - [ ] `detect_momentum(prices, window=20)` → directional bias, strength 0–1
-  - [ ] `detect_volatility_regime(prices)` → low/medium/high — affects tick duration recommendation
-  - [ ] `recommend_duration(symbol, strategy, volatility)` → 1, 2, or 5 ticks
-    - low vol + digit match → 1 tick (faster settlement, less drift)
-    - high vol + rise/fall → 5 ticks (momentum has time to play out)
-  - [ ] `extract_signals(symbol, digits, prices)` → list of Signal, sorted by composite score
-    - Only emit if composite score ≥ 55% (configurable threshold)
-    - Each signal includes: symbol, strategy, digit/barrier, recommended_duration, confidence, edge, grade (A/B/C)
+    - `markov_prob`: P(next=d | last 2 digits) from transition matrix
+    - `frequency_deficit`: expected 10% minus actual frequency (positive = overdue)
+    - `gap_score`: ticks since digit last appeared (higher = stronger mean-reversion signal)
+    - `composite = 0.5 * markov + 0.3 * deficit + 0.2 * gap`
+  - [ ] `score_even_odd(digits)` → pEven, pOdd, streak_length, momentum
+  - [ ] `score_rise_fall(prices)` → pRise, pFall, streak_reversal_prob, volatility_regime
+  - [ ] `score_over_under(digits)` → best_threshold, prob[] for thresholds 1–8
+  - [ ] `detect_volatility_regime(prices, window=50)` → "low" / "medium" / "high"
+  - [ ] `recommend_duration(strategy, volatility_regime)` → 1, 2, or 5 ticks
+  - [ ] `extract_signals(symbol, digits, prices)` → Signal list, sorted by confidence
+    - Grade A ≥ 65%, Grade B 55–64%, filter out below 55%
+    - Each signal includes: symbol, name, strategy, contract_type, barrier, duration, confidence, edge, grade
 
-### 3C — Timing Engine (the key differentiator)
-> When to fire the order so the trade enters at exactly the right tick.
+### 3C — Timing Engine
 - [ ] `backend/app/services/timing.py`
-  - [ ] `measure_rtt(ws)` → current round-trip time to Deriv WS in ms
-  - [ ] `estimate_tick_interval(symbol, recent_times[])` → avg ms between ticks (e.g. ~1000ms for Vol indices, ~250ms for 1s indices)
-  - [ ] `compute_entry_deadline(tick_interval, rtt)` → how many ms after current tick we have to send the order and still enter on the NEXT tick
-    - Formula: `deadline = tick_interval - rtt - 50ms_buffer`
-  - [ ] `should_fire_now(last_tick_time, rtt, tick_interval)` → bool
-    - True if we're within the entry window for the next tick
-    - Prevents entering mid-tick (which would waste a tick)
-  - [ ] `schedule_entry(signal, ws, token)` → waits for optimal moment, then calls `execute_buy`
-  - [ ] Expose timing info to frontend: `{ rtt_ms, tick_interval_ms, entry_window_ms, next_tick_in_ms }`
+  - [ ] `estimate_tick_interval(recent_times[])` → avg ms between ticks
+  - [ ] `compute_entry_window(tick_interval_ms, rtt_ms)` → ms available after current tick to fire order
+    - Formula: `entry_window = tick_interval - rtt - 80ms_safety_buffer`
+  - [ ] `should_fire_now(last_tick_epoch, rtt_ms, tick_interval_ms)` → bool + ms_until_optimal
+  - [ ] `schedule_entry(signal, ws, token)` — waits for optimal window, calls `execute_buy`
+  - [ ] Return to frontend: `{ rtt_ms, tick_interval_ms, entry_window_ms, next_tick_in_ms }`
 
-### 3D — Claude API Signal Explainer
+### 3D — Claude AI Explainer
 - [ ] `backend/app/services/ai_explainer.py`
-  - [ ] `explain_signal(signal)` → calls `claude-haiku-4-5`, returns 2-sentence explanation
-  - [ ] Input: transition matrix slice, digit frequencies, gap, streak, recommended duration
-  - [ ] Example output: "Digit 3 has appeared only 3 times in the last 100 ticks vs an expected 10. The Markov chain shows a 68% transition probability from the current sequence to digit 3 in the next 2 ticks."
-  - [ ] Cache in Redis for 30s (same signal = same explanation, no repeat API calls)
-  - [ ] Fallback: if Claude unavailable, show raw stats instead
+  - [ ] `explain_signal(signal_data)` → call `claude-haiku-4-5-20251001`
+  - [ ] Input: top 3 digits + their frequencies, transition matrix slice, gap, streak, momentum
+  - [ ] Prompt: "You are a trading signal explainer. Given these statistics, explain in exactly 2 sentences why digit N is likely to match in the next M ticks. Be specific about the numbers."
+  - [ ] Output: 2-sentence plain English shown on signal card
+  - [ ] Redis cache: `explain:{symbol}:{digit}:{round(confidence,1)}` → 30s TTL
+  - [ ] Fallback if Claude unavailable: generate template string from raw stats
 
 ### 3E — WebSocket Signal Broadcaster
 - [ ] `backend/app/core/ws_manager.py`
-  - [ ] Per-user Deriv WS connection (keyed by JWT sub)
-  - [ ] On every tick: run `extract_signals()` → if Grade A/B signal found → broadcast to frontend
-  - [ ] FastAPI `/ws/signals` endpoint — frontend subscribes here
-  - [ ] Message types pushed to frontend:
-    - `{ type: "signal", data: Signal[] }` — new signals ranked by confidence
-    - `{ type: "tick", symbol, digit, price, epoch }` — every tick for live digit strip
-    - `{ type: "balance", balance, currency }` — real-time balance
-    - `{ type: "trade_update", contract_id, pnl, status }` — open contract P&L
-    - `{ type: "trade_settled", contract_id, outcome, pnl }` — WIN/LOSS auto-detected
-    - `{ type: "timing", rtt_ms, tick_interval_ms, next_tick_in_ms }` — entry timing data
-  - [ ] Heartbeat: ping Deriv every 25s, ping frontend client every 15s
+  - [ ] Per-user connection pool (public WS for ticks, trading WS for execution)
+  - [ ] `SignalBroadcaster`: on every tick → run `extract_signals()` → if A/B signal → enrich with live proposal → broadcast
+  - [ ] FastAPI `/ws/signals` endpoint — frontend subscribes here (JWT authenticated)
+  - [ ] Message types to frontend:
+    - `{ type:"signal", data:Signal[] }` — ranked signals with payout
+    - `{ type:"tick", symbol, digit, price, epoch }` — every tick
+    - `{ type:"balance", balance, currency }` — after each trade
+    - `{ type:"trade_opened", contract_id, buy_price, payout, start_time }` — trade confirmed
+    - `{ type:"trade_update", contract_id, current_value, profit }` — live P&L
+    - `{ type:"trade_settled", contract_id, outcome, profit, exit_tick }` — WIN/LOSS final
+    - `{ type:"timing", rtt_ms, tick_interval_ms, next_tick_in_ms }` — entry window
+  - [ ] Heartbeat: `{ time:1 }` ping to Deriv every 25s, ping to frontend every 15s
 
-### 3F — Trade Execution API
+### 3F — Trade API
 - [ ] `backend/app/api/trade.py`
-  - [ ] `POST /api/trade/proposal` — get live quote (proposal_id, payout) for a signal
-    - Body: `{ symbol, contract_type, barrier, duration, stake }`
-    - Returns: `{ proposal_id, ask_price, payout, payout_percentage }`
-  - [ ] `POST /api/trade/buy` — execute trade with timing engine
-    - Body: `{ proposal_id, price, symbol }` (user's JWT provides the Deriv token)
-    - Backend: calls `schedule_entry()` → fires at optimal tick window → returns contract_id
-  - [ ] `POST /api/trade/sell` — early exit open contract
-    - Body: `{ contract_id }`
-  - [ ] `GET /api/trade/history` — fetch `profit_table` from Deriv (no local DB needed)
-  - [ ] `GET /api/trade/open` — fetch `portfolio` (open contracts)
-  - [ ] All endpoints: protected by JWT `Depends(get_current_user)`, Deriv token extracted from JWT
+  - [ ] `POST /api/trade/proposal` — Body: `{ symbol, contract_type, barrier, duration, stake }`
+    - Returns: `{ proposal_id, ask_price, payout, payout_pct, longcode }`
+  - [ ] `POST /api/trade/buy` — Body: `{ proposal_id, price }`
+    - Uses timing engine: waits for optimal entry window, fires `buy` on trading WS
+    - Returns: `{ contract_id, buy_price, payout, purchase_time, balance_after }`
+  - [ ] `POST /api/trade/sell` — Body: `{ contract_id }` → early exit at market price
+  - [ ] `GET /api/trade/history` — fetches `profit_table` from Deriv (limit/offset params)
+  - [ ] `GET /api/trade/open` — fetches `portfolio` (open contracts)
+  - [ ] All protected by `Depends(get_current_user)`
 
 ### 3G — Tests
-- [ ] pytest: transition matrix rows sum to 1.0 ± 0.001
-- [ ] pytest: signals sorted by composite score descending
-- [ ] pytest: grade thresholds — A ≥ 65%, B 55–64%, C < 55% (filtered out)
-- [ ] pytest: timing engine — deadline always > 0 when RTT < tick_interval
+- [ ] Transition matrix rows sum to 1.0 ± 0.001
+- [ ] Signals sorted by confidence descending
+- [ ] Grade A ≥ 0.65, Grade B ≥ 0.55 < 0.65
+- [ ] Timing: entry_window > 0 when rtt < tick_interval
 - [ ] Commit: `feat: phase 3 - ai signal engine + timing-aware execution`
 
 ---
 
 ## PHASE 4 — Full Dashboard UI
-> Goal: The complete trading terminal. User never needs to open Deriv.
-> Every action — analysis, signal review, trade, journal — is inside this app.
+> Complete trading terminal. Everything inside this app. User never opens Deriv.
 
 ### 4A — Pages
-- [ ] `/dashboard` — live signal terminal + instrument cards + trade modal (main view)
-- [ ] `/journal` — real P&L from Deriv `profit_table`, session stats, win rate chart
-- [ ] `/auto` — automation control (start/pause/stop AI bot, configure risk limits)
-- [ ] `/settings` — instruments, default stake, min confidence threshold, notification prefs
-- [ ] `/` — landing page: live anonymised signal preview, features, affiliate CTA, login
+- [ ] `/dashboard` — signal tray + instrument cards + live balance (main view)
+- [ ] `/journal` — P&L from `profit_table`, win rate chart, session stats
+- [ ] `/auto` — automation control (start/pause/stop, configure risk limits)
+- [ ] `/settings` — instruments, default stake, min confidence, notifications
+- [ ] `/` — landing page: anonymised live signal preview, features, affiliate CTA, login
 
-### 4B — Signal Display
-- [ ] `<SignalTray />` — horizontal scrollable signal cards, live from `/ws/signals`
-  - Sorted by confidence score, Grade A first
-  - Each card pulses when signal is fresh (< 3 ticks old)
-  - Stale signals (> 10 ticks) fade out automatically
-- [ ] `<SignalCard />` — shows:
+### 4B — Signal Tray
+- [ ] `<SignalTray />` — horizontal scroll, sorted by confidence (A first)
+  - Fresh signal (< 3 ticks old): pulse animation
+  - Stale (> 10 ticks): fade + auto-remove
+- [ ] `<SignalCard />` shows:
   - Strategy badge (MATCH / EVEN / ODD / RISE / FALL / OVER / UNDER)
-  - Instrument name ("Volatility 100")
-  - Target digit (for digit strategies) highlighted large
+  - Instrument name large ("Volatility 100")
+  - Target digit highlighted (e.g. "3") — large, prominent
   - Confidence % + grade badge (A/B)
-  - Recommended duration ("Enter for 2 ticks")
-  - AI explanation (2 sentences from Claude)
-  - Live payout (fetched from Deriv proposal, updates each tick)
-  - Entry timing bar: countdown to optimal entry window
-  - **TRADE** button — triggers `POST /api/trade/proposal` then opens TradeModal
+  - Recommended duration ("2 ticks")
+  - AI explanation (2 sentences)
+  - Live payout (e.g. "$10 → $19.90" — updates each tick from proposal subscription)
+  - Entry timing bar: "Entry window open · 340ms"
+  - **TRADE** button → opens TradeModal
 
-### 4C — Trade Execution
-- [ ] `<TradeModal />` — opens when user clicks TRADE on a signal card
-  - Shows: digit, strategy, confidence, recommended duration
-  - Live payout from Deriv (updates every tick via `useProposal` hook)
-  - Stake input with quick-select buttons ($1 / $5 / $10 / custom)
-  - Entry timing display: "Next entry window in 340ms" (live countdown)
-  - RTT display: "Server RTT: 42ms"
+### 4C — Trade Modal (critical UX)
+- [ ] `<TradeModal />` — the moment of execution
+  - Shows: digit, strategy, instrument, confidence, recommended duration
+  - Stake selector: $1 / $5 / $10 / $25 / custom input
+  - Live payout from Deriv proposal (updates every tick)
+  - Entry timing: "Optimal entry in 280ms" (live countdown from timing engine)
+  - RTT: "Server RTT: 42ms"
   - **Place Trade** button:
     - Calls `POST /api/trade/buy`
     - Backend timing engine fires at optimal tick window
-    - Modal transitions to "Waiting for entry…" then "Contract open"
-  - After entry: live P&L ticker (from `proposal_open_contract` subscription)
-  - Auto-closes and logs outcome when contract settles (WIN/LOSS from transaction subscription)
-  - No manual WIN/LOSS entry needed — Deriv tells us the outcome
-- [ ] `<LiveBalance />` in topbar — real-time balance from balance subscription
+    - Button shows "Timing entry…" → "Contract open · $19.90 payout"
+  - After entry: live current value from `proposal_open_contract`
+  - Auto-closes on contract settle: "WIN +$9.40 🟢" or "LOSS -$10 🔴"
+  - No manual WIN/LOSS entry — Deriv's `transaction` subscription tells us automatically
 
-### 4D — Instrument View
-- [ ] `<InstrumentCard />` — per symbol:
-  - Last 20 digits displayed as coloured cells (each digit has a colour)
-  - Current tick price + pip
-  - Strategy breakdown grid (each strategy's current confidence %)
-  - Over/Under heatmap (thresholds 1–8, colour-coded probability)
-  - Sparkline (last 50 price movements)
-  - Tick interval + RTT displayed live
+### 4D — Instrument Cards
+- [ ] `<InstrumentCard />` per symbol:
+  - Last 20 digits as coloured cells (0=grey, 1–4 warm, 5–9 cool)
+  - Even/Odd streak indicator
+  - Strategy confidence grid (all 6 strategies × current %)
+  - Over/Under heatmap (thresholds 1–8)
+  - Sparkline (last 50 prices)
+  - Live tick interval + RTT
 
-### 4E — Journal (Real Data)
-- [ ] `<JournalTable />` — paginated table from Deriv `profit_table`
-  - Columns: time, symbol, strategy, digit, duration, stake, payout, outcome, P&L
-  - Filter by symbol, strategy, outcome
-- [ ] `<WinRateChart />` — recharts area chart, win % rolling over last 50 / 100 / 200 trades
-- [ ] `<SessionSummary />` — current session: trades placed, win rate, net P&L, best signal
+### 4E — Journal (Real Data from Deriv)
+- [ ] `<JournalTable />` — from `profit_table` API, paginated
+  - Columns: time, symbol, strategy, digit, duration, stake, payout, outcome, net P&L
+  - Filters: symbol, strategy, outcome (win/loss), date range
+- [ ] `<WinRateChart />` — recharts area chart, rolling win % over 50/100/200 trades
+- [ ] `<SessionSummary />` — this session: trades, win rate, net P&L, peak confidence
 
-### 4F — Hooks
-- [ ] `useSignals(symbols)` — subscribes to `/ws/signals`, exposes signals[], ticks[], balance
-- [ ] `useProposal(signal, stake)` — live payout quote from Deriv, auto-refreshes each tick
-- [ ] `useTradeExecution()` — wraps `POST /api/trade/buy`, tracks pending/open/settled state
-- [ ] `useJournal()` — fetches profit_table, merges with in-session trades
-- [ ] `useBalance()` — live balance from WS
-- [ ] `useTiming(symbol)` — RTT, tick interval, entry window countdown
+### 4F — Live Balance in Topbar
+- [ ] Replace static win rate pill with live balance from `balance` subscription
+- [ ] Show: account currency + balance + session P&L delta (green/red)
+
+### 4G — Hooks
+- [ ] `useSignals(symbols)` — subscribes to `/ws/signals`, returns signals[], ticks[], balance
+- [ ] `useProposal(signal, stake)` — live payout quote, auto-refreshes each tick
+- [ ] `useTradeExecution()` — wraps trade/buy, tracks pending/open/settled state machine
+- [ ] `useJournal()` — fetches profit_table, paginates
+- [ ] `useBalance()` — live balance stream
+- [ ] `useTiming(symbol)` — RTT, tick_interval, entry window countdown
 
 - [ ] Commit: `feat: phase 4 - full trading terminal ui`
 
 ---
 
-## PHASE 5 — AI Automation Bot
-> Goal: AI runs the full loop autonomously. User sets risk limits and walks away.
+## PHASE 5 — Automation Bot
+> AI runs the full loop. User sets limits and can pause/stop at any time.
 
-- [ ] `backend/app/services/bot.py`
-  - [ ] `BotSession` — per-user: active symbols, stake, min_grade, max_trades_per_hour, max_daily_loss_pct, strategy (flat/martingale)
-  - [ ] Loop: wait for Grade A signal → fetch proposal → confirm payout ≥ 80% → schedule_entry → buy → monitor → log
-  - [ ] Martingale mode: double stake after loss (up to 4x), reset on win
-  - [ ] Hard stops: pause if daily loss > user limit, pause if 3 consecutive losses
-  - [ ] Resume only on explicit user action (never auto-resume from loss stop)
-- [ ] `backend/app/api/bot.py`
-  - [ ] `POST /api/bot/start` — starts BotSession with config
-  - [ ] `POST /api/bot/pause` / `/resume` / `/stop`
-  - [ ] `GET /api/bot/status` — live stats: trades, win rate, P&L, current signal being watched
+- [ ] `backend/app/services/bot.py` — `BotSession`:
+  - Config: symbols[], stake, min_grade (A only / A+B), max_trades_per_hour, max_daily_loss_pct, stake_strategy (flat / martingale)
+  - Loop: wait for Grade A signal → get proposal → confirm payout% ≥ threshold → `schedule_entry` → buy → monitor → log
+  - Martingale: double stake after loss (cap at 4x), reset on win
+  - Hard stops: pause if daily loss > limit; pause if 3 consecutive losses
+  - Never auto-resume from a loss stop — requires explicit user action
+- [ ] `backend/app/api/bot.py`:
+  - `POST /api/bot/start` — start session with config
+  - `POST /api/bot/pause` / `/resume` / `/stop`
+  - `GET /api/bot/status` — live: trades, win rate, P&L, current signal being watched
 - [ ] Frontend `/auto` page:
-  - [ ] Configure: symbols, stake, min confidence, max daily loss, strategy
-  - [ ] Live feed of bot decisions: "Watching Vol 100 for Digit 3 MATCH…", "Trade placed: contract #123"
-  - [ ] P&L meter (green/red progress bar vs daily limit)
-  - [ ] Pause / Stop buttons always visible
-  - [ ] Bot cannot start unless user explicitly clicks START this session (no auto-start on login)
-- [ ] Commit: `feat: phase 5 - ai automation bot`
+  - Configure form (symbols, stake, min confidence, max loss)
+  - Live decision feed: "Watching Vol 100 · waiting for Grade A…", "Signal: Digit 3 MATCH 71% · entering…", "Bought · contract #123"
+  - P&L progress bar vs daily loss limit
+  - PAUSE / STOP always visible
+  - Bot cannot start automatically on login — explicit START required every session
+- [ ] Commit: `feat: phase 5 - automation bot`
 
 ---
 
 ## PHASE 6 — Affiliate Tracking + DB
-> First time a database is actually needed.
+> First time we actually need a database.
 
 - [ ] PostgreSQL via docker-compose (already scaffolded)
-- [ ] SQLAlchemy model: `ReferredUser(deriv_acct_id, referred_at, first_trade_at, is_active)`
+- [ ] SQLAlchemy: `ReferredUser(deriv_acct_id, referred_at, first_trade_at, is_active, utm_campaign)`
 - [ ] Alembic migration: `alembic revision --autogenerate -m "create referred_users"`
-- [ ] Affiliate link on landing: `https://track.deriv.com/AFFILIATE_ID/1/` (from .env)
-- [ ] `POST /api/affiliate/register` — called from AuthCallback when referral param present
-- [ ] First trade tracking via `transaction` subscription (already subscribed per user)
-- [ ] `GET /api/affiliate/stats` — count, active traders, estimated commission
+- [ ] Use NEW signup URL with `prompt=registration&utm_source=AFFILIATE_ID&utm_medium=affiliate&sidc=GUID`
+- [ ] `POST /api/affiliate/register` — called from callback when referral params present in state
+- [ ] First trade detection via `transaction` subscription (already subscribed per user WS session)
+- [ ] `GET /api/affiliate/stats` → referred count, active traders, estimated commission
+- [ ] `GET /applications/v1/markup-statistics` → track app markup revenue per month
 - [ ] Admin page `/admin/affiliate`
 - [ ] Commit: `feat: phase 6 - affiliate tracking`
 
 ---
 
 ## PHASE 7 — Subscriptions
-> Gate features by tier. Free gets signals. Pro gets one-click trade. Elite gets full bot.
-
 - [ ] Stripe setup + `POST /api/webhooks/stripe`
 - [ ] `Subscription` model: deriv_acct_id, tier, stripe_sub_id, expires_at
-- [ ] Tier gates:
-  - **Free** — live signals dashboard, read-only journal
-  - **Pro ($19/mo)** — one-click trade execution, live proposals, full journal
-  - **Elite ($49/mo)** — full AI automation bot, custom risk settings, priority signals
-- [ ] Pricing page on landing (visible before login)
-- [ ] Stripe Checkout → `POST /api/subscriptions/checkout`
-- [ ] Webhook: `customer.subscription.updated` → update DB tier
+- [ ] Tiers:
+  - **Free** — live signals, read-only journal
+  - **Pro ($19/mo)** — one-click trade, live proposals, full journal
+  - **Elite ($49/mo)** — full bot, custom risk settings, priority signals
 - [ ] Commit: `feat: phase 7 - subscriptions`
 
 ---
 
 ## PHASE 8 — Notifications
-- [ ] Telegram bot: Grade A signal fires → instant message with digit, confidence, payout
-- [ ] Email (SendGrid): daily P&L digest, "bot stopped: loss limit hit" alert
-- [ ] Browser Push: permission prompt in /settings, fires on Grade A signal
-- [ ] User preference: per-strategy toggle, min confidence threshold for alerts
+- [ ] Telegram: Grade A signal → instant message (digit, confidence, payout)
+- [ ] Email (SendGrid): daily P&L digest, "bot stopped: loss limit" alert
+- [ ] Browser Push: permission prompt in /settings
 - [ ] Commit: `feat: phase 8 - notifications`
 
 ---
 
 ## PHASE 9 — Production Deploy
-- [ ] `Dockerfile` for backend (multi-stage, slim Python image)
-- [ ] GitHub Actions CI: pytest → tsc → vite build on every PR
+- [ ] Dockerfile (multi-stage, slim Python)
+- [ ] GitHub Actions CI: pytest → tsc → vite build on PR
 - [ ] GitHub Actions CD: deploy on merge to main
-- [ ] Frontend → Vercel (auto-deploy `frontend/`)
-- [ ] Backend → Railway or Render (Dockerfile)
-- [ ] DB → Supabase (only needed from Phase 6)
-- [ ] Redis → Upstash (signal cache + session state)
+- [ ] Frontend → Vercel | Backend → Railway | DB → Supabase | Redis → Upstash
 - [ ] Custom domain + SSL + Sentry + Uptime Robot
 - [ ] Commit: `feat: phase 9 - production deploy`
 
 ---
 
-## Backlog / Future
-- MCP integration: `https://mcp-api.deriv.com/mcp` — AI tools query live Deriv data directly
-- Bulk purchase: same signal → trade across multiple accounts simultaneously
-- Accumulator strategy: low volatility regime → auto-enter ACCU contracts
-- Multiplier strategy: strong directional signal → MULTUP/MULTDOWN with stop-loss
-- Signal accuracy tracker: log every signal recommendation, compare to actual outcome, compute true edge
-- Leaderboard: top performing users (opt-in, anonymised)
-- Mobile PWA: install to homescreen, push notifications
+## Backlog
+- MCP: `https://mcp-api.deriv.com/mcp` — AI tools query live Deriv data directly
+- Bulk purchase: same signal → buy across up to 100 accounts simultaneously
+- Accumulator strategy: low volatility → ACCU contracts (compounds tick by tick)
+- Multiplier strategy: strong directional signal → MULTUP/MULTDOWN with stop_loss + take_profit via `contract_update`
+- Demo mode: trade on demo account to test signals before switching to real
+- Signal accuracy tracker: log every signal, track actual outcome, compute true historical edge
+- Leaderboard: top performers (opt-in, anonymised)
+- Mobile PWA
