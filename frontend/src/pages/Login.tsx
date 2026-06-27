@@ -2,12 +2,19 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 
+const IS_DEV = import.meta.env.DEV
+
 const APP_ID = import.meta.env.VITE_DERIV_APP_ID || '1089'
 const DERIV_OAUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=en`
 
 export default function Login() {
-  const { isLoggedIn } = useAuthStore()
+  const { isLoggedIn, setAuth } = useAuthStore()
   const navigate = useNavigate()
+
+  function devLogin() {
+    setAuth({ deriv_account_id: 'DEV_ACCOUNT', email: 'dev@local', currency: 'USD', country: 'KE' }, 'dev-token')
+    navigate('/dashboard', { replace: true })
+  }
 
   useEffect(() => {
     if (isLoggedIn) navigate('/dashboard', { replace: true })
@@ -51,6 +58,14 @@ export default function Login() {
           >
             Sign in with Deriv
           </a>
+          {IS_DEV && (
+            <button
+              onClick={devLogin}
+              className="block w-full py-2 rounded-lg border border-border-2 text-ink-muted text-xs hover:text-ink hover:border-ink-muted transition-colors"
+            >
+              ⚡ Dev bypass (local only)
+            </button>
+          )}
           <p className="text-xs text-ink-muted">
             Don't have an account?{' '}
             <a
