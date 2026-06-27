@@ -16,9 +16,8 @@
 ---
 
 ## Current Status
-**Phase 2 complete** — Legacy OAuth login (token verified via WS authorize, JWT issued).
-**⚠ Phase 2 needs upgrade** — New Deriv API uses OAuth2 PKCE + OTP. See Phase 2B below.
-**Next:** Phase 3 — AI signal engine + timing-aware execution.
+**Phase 2B complete** — Full OAuth2 PKCE flow implemented. Frontend generates verifier/challenge/state, backend exchanges code for Deriv access_token, fetches accounts, gets OTP WS URL, stores in Redis, issues JWT. Affiliate signup URL built with utm_source/utm_medium/sidc params. Dev bypass live.
+**Next:** Phase 3 — AI signal engine + timing-aware execution + trade API.
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind · FastAPI · Redis · Claude API
@@ -184,21 +183,17 @@ Duration unit: `"t"` = ticks (1–5 for digits), `"s"` = seconds, `"m"` = minute
 
 ---
 
-## PHASE 2B — Upgrade Auth to New Deriv API (OAuth2 PKCE)
-> Current implementation uses legacy WS `authorize` flow. New API needs PKCE + OTP.
-> This must be done before Phase 3 so the backend can open authenticated WS connections.
-
-- [ ] Register OAuth2 client at Deriv dashboard → get `CLIENT_ID` (separate from APP_ID)
-- [ ] Add to `.env`: `DERIV_CLIENT_ID`, `DERIV_CLIENT_SECRET` (if needed), `DERIV_REDIRECT_URI`
-- [ ] Frontend: `Login.tsx` — generate PKCE verifier + challenge + state, store in sessionStorage, redirect to `https://auth.deriv.com/oauth2/auth?...`
-- [ ] Frontend: `AuthCallback.tsx` — now receives `?code=&state=` (not `?token1=`) — verify state, send code to backend
-- [ ] Backend: `POST /api/auth/callback` — receives code + verifier → exchanges with `https://auth.deriv.com/oauth2/token` → gets `access_token`
-- [ ] Backend: use access_token → `GET /trading/v1/options/accounts` → get account_id, balance, currency
-- [ ] Backend: `POST /trading/v1/options/accounts/{id}/otp` → get authenticated WS URL
-- [ ] Backend: store `{ access_token, otp_ws_url, account_id }` in Redis keyed by our JWT sub (expires 1hr)
-- [ ] Backend: issue our JWT with `{ deriv_account_id, currency, email }` — same as before
-- [ ] Affiliate signup URL: build with `prompt=registration&utm_source=AFFILIATE_ID&utm_medium=affiliate&sidc=SESSION_GUID`
-- [ ] Commit: `feat: phase 2b - oauth2 pkce + otp ws auth upgrade`
+## PHASE 2B — COMPLETE ✓
+- PKCE: `src/lib/pkce.ts` — generateCodeVerifier, generateCodeChallenge, buildLoginUrl, buildSignupUrl
+- Login.tsx — PKCE flow, affiliate signup URL with utm params + sidc
+- AuthCallback.tsx — verifies state, sends code+verifier to backend, handles errors
+- Backend auth_service.py — exchange_code_for_token → get_deriv_accounts → get_otp_ws_url
+- Backend auth API — stores OTP WS URL in Redis (1hr TTL), issues JWT (no tokens in JWT)
+- Backend config.py — DERIV_CLIENT_ID, AFFILIATE_ID/SIDC/CAMPAIGN, ANTHROPIC_API_KEY
+- Backend redis_client.py — async Redis pool
+- .env.example — all variables documented
+- requirements.txt — redis + anthropic added
+- TODO: register OAuth2 app at https://api.deriv.com/dashboard to get DERIV_CLIENT_ID
 
 ---
 
