@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Digit Strategy Terminal — Deriv AI Synthetic</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════════════ -->
+<header class="topbar">
+  <div class="tb-brand">
+    <div class="brand-icon">DST</div>
+    <div>
+      <div class="brand-name">Digit Strategy Terminal</div>
+      <div class="brand-sub">Deriv AI Synthetic · Auto-Analysis</div>
+    </div>
+  </div>
+
+  <div class="tb-pills">
+    <div class="pill"><span class="pill-l">RTT</span><span class="pill-v" id="rttVal">—</span></div>
+    <div class="pill"><span class="pill-l">Win Rate</span><span class="pill-v green" id="winRateVal">—</span></div>
+    <div class="pill"><span class="pill-l">Trades</span><span class="pill-v" id="tradeCountVal">0</span></div>
+    <div class="pill status-pill">
+      <span class="sdot" id="sdot"></span>
+      <span class="pill-v" id="statusVal">Offline</span>
+    </div>
+    <button class="icon-btn snd-btn" id="btnSound" title="Sound alerts">🔔</button>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════
+     LAYOUT
+══════════════════════════════════════════════════ -->
+<div class="layout">
+
+  <!-- ── SIDEBAR ──────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <div class="sb-block">
+      <div class="sb-label">Connection</div>
+      <div class="frow">
+        <label>App ID <a href="https://api.deriv.com/dashboard" target="_blank" rel="noopener" class="link">↗ Free</a></label>
+        <input type="text" id="appId" value="1089"/>
+      </div>
+      <div class="frow">
+        <label>History Depth</label>
+        <select id="histCount">
+          <option value="2000">2 000 ticks</option>
+          <option value="4000" selected>4 000 ticks</option>
+          <option value="5000">5 000 ticks (max)</option>
+        </select>
+      </div>
+      <div class="frow">
+        <label>Instruments</label>
+        <div class="checks" id="instrChecks">
+          <label class="chk"><input type="checkbox" value="R_10"    /> Vol 10</label>
+          <label class="chk"><input type="checkbox" value="R_25"    /> Vol 25</label>
+          <label class="chk"><input type="checkbox" value="R_50"    checked/> Vol 50</label>
+          <label class="chk"><input type="checkbox" value="R_75"    /> Vol 75</label>
+          <label class="chk"><input type="checkbox" value="R_100"   checked/> Vol 100</label>
+          <label class="chk"><input type="checkbox" value="1HZ10V"  /> 1s-10</label>
+          <label class="chk"><input type="checkbox" value="1HZ50V"  /> 1s-50</label>
+          <label class="chk"><input type="checkbox" value="1HZ100V" checked/> 1s-100</label>
+          <label class="chk"><input type="checkbox" value="JD10"    /> Jump 10</label>
+          <label class="chk"><input type="checkbox" value="JD50"    /> Jump 50</label>
+          <label class="chk"><input type="checkbox" value="JD100"   /> Jump 100</label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-go" id="btnConnect">▶ Connect &amp; Analyze</button>
+        <button class="btn-stop hidden" id="btnStop">■ Stop</button>
+      </div>
+    </div>
+
+    <div class="sb-block" id="journalBlock">
+      <div class="sb-label">
+        Trade Journal
+        <button class="mini-btn" id="btnClearJ">Clear</button>
+      </div>
+      <div class="j-summary" id="jSummary">No trades yet</div>
+      <div class="j-list" id="jList"></div>
+    </div>
+
+  </aside>
+
+  <!-- ── MAIN ─────────────────────────────────────── -->
+  <main class="content" id="mainContent">
+
+    <!-- TOP SIGNALS -->
+    <div class="signals-panel" id="signalsPanel">
+      <div class="sp-head">
+        <span class="sp-title">Top Signals</span>
+        <span class="sp-hint" id="spHint">Connect to begin auto-analysis</span>
+      </div>
+      <div class="sp-list" id="spList">
+        <div class="sp-empty">Analyzing historical data…</div>
+      </div>
+    </div>
+
+    <!-- INSTRUMENT CARDS GRID -->
+    <div class="card-grid" id="cardGrid">
+      <div class="grid-empty" id="gridEmpty">
+        <div class="ge-icon">◎</div>
+        <p>Select instruments and click <strong>Connect &amp; Analyze</strong></p>
+        <p class="dim">The app automatically fetches thousands of real historical ticks,<br/>
+        analyzes patterns, and shows you which strategy to trade — right now.</p>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     TRADE MODAL
+══════════════════════════════════════════════════ -->
+<div class="overlay hidden" id="tradeOverlay">
+  <div class="tmodal">
+    <div class="tm-head">
+      <div>
+        <div class="tm-title" id="tmTitle">Trade Entry</div>
+        <div class="tm-sub"  id="tmSub">—</div>
+      </div>
+      <div class="tm-conf" id="tmConf">—</div>
+    </div>
+
+    <div class="tm-timing">
+      <div class="trow"><span>Signal fired</span><span class="mono" id="ttSignal">—</span></div>
+      <div class="trow"><span>Trade clicked</span><span class="mono" id="ttClick">—</span></div>
+      <div class="trow"><span>Server RTT</span><span class="mono" id="ttRtt">—</span></div>
+      <div class="trow hl"><span>Estimated entry</span><span class="mono" id="ttEntry">—</span></div>
+    </div>
+
+    <div class="tm-watch">
+      <div class="tw-label">Ticks arriving after click — <span id="twSym">—</span></div>
+      <div class="tw-cells" id="twCells"></div>
+      <div class="tw-count">Ticks since click: <b id="twCount">0</b></div>
+    </div>
+
+    <div class="tm-q">Did this trade win or lose?</div>
+    <div class="tm-btns">
+      <button class="tbtn win"  id="btnWin">WIN</button>
+      <button class="tbtn loss" id="btnLoss">LOSS</button>
+      <button class="tbtn skip" id="btnSkip">Didn't Trade</button>
+    </div>
+  </div>
+</div>
+
+<script src="feed.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
