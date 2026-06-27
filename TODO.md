@@ -5,8 +5,8 @@
 ---
 
 ## Current Status
-**Phase 0 complete** — Vanilla JS prototype built and pushed to GitHub.
-**Next:** Start Phase 1 — monorepo scaffold with Vite + React + Tailwind + FastAPI.
+**Phase 1 complete** — Monorepo scaffold: Vite + React + TypeScript + Tailwind (dark theme), FastAPI backend, docker-compose, Makefile, `/api/health` verified.
+**Next:** Start Phase 2 — Deriv OAuth2 login, User/UserToken DB models, JWT auth.
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind CSS · FastAPI (Python) · PostgreSQL · Redis
@@ -26,28 +26,6 @@
 - Friendly instrument names (Volatility 100, Jump 50, etc.)
 
 ---
-
-## PHASE 1 — Foundation & Monorepo
-> Goal: Both frontend and backend servers running locally, talking to each other.
-
-- [ ] Create `frontend/` with Vite + React + TypeScript
-  - [ ] `npm create vite@latest frontend -- --template react-ts`
-  - [ ] Install Tailwind CSS v4 + configure
-  - [ ] Install: `react-router-dom`, `zustand`, `@tanstack/react-query`, `recharts`
-  - [ ] Set up path aliases (`@/` → `src/`)
-  - [ ] Dark theme Tailwind config (match current terminal palette)
-  - [ ] Basic layout shell: topbar + sidebar + main content area
-- [ ] Create `backend/` with FastAPI
-  - [ ] `python -m venv .venv` + `pip install fastapi uvicorn sqlalchemy alembic psycopg2 redis python-jose passlib httpx websockets`
-  - [ ] `requirements.txt` + `requirements-dev.txt`
-  - [ ] Folder structure: `app/api/`, `app/core/`, `app/models/`, `app/schemas/`, `app/services/`
-  - [ ] `main.py` with health check endpoint `/api/health`
-  - [ ] CORS configured for `localhost:5173`
-- [ ] `docker-compose.yml` — PostgreSQL + Redis containers
-- [ ] `.env.example` with all required variables
-- [ ] `Makefile` with `make dev`, `make migrate`, `make test`
-- [ ] Verify: `make dev` starts both servers, `/api/health` returns 200
-- [ ] Commit: `feat: phase 1 - monorepo scaffold`
 
 ---
 
