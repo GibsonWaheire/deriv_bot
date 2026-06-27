@@ -1,33 +1,36 @@
-import httpx
+import json
 import jwt
+import websockets
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 
-DERIV_WS = "wss://ws.binaryws.com/websockets/v3"
+DERIV_WS_URL = "wss://ws.binaryws.com/websockets/v3"
 
 
-async def exchange_deriv_token(token: str, account: str) -> dict:
-    """Call Deriv API to verify token and get account info, return our JWT."""
-    async with httpx.AsyncClient() as client:
-        # Use Deriv REST-like approach: verify token via authorize call
-        # For now we trust the token and build the user object
-        # Full verification happens via WebSocket in Phase 3
-        user = {
-            "id": account,
-            "deriv_account_id": account,
-            "email": "",
-            "currency": "USD",
-            "country": "",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+async def verify_deriv_token(token: str) -> dict:
+    """Connect to Deriv WS, authorize the token, return account info."""
+    url = f"{DERIV_WS_URL}?app_id={settings.deriv_app_id}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"authorize": token}))
+        raw = await ws.recv()
+        msg = json.loads(raw)
+        if msg.get("error"):
+            raise ValueError(msg["error"].get("message", "Deriv auth failed"))
+        auth = msg.get("authorize", {})
+        return {
+            "deriv_account_id": auth.get("loginid", ""),
+            "email": auth.get("email", ""),
+            "currency": auth.get("currency", "USD"),
+            "country": auth.get("country", ""),
+            "balance": auth.get("balance", 0),
         }
 
-    access_token = _create_jwt({"sub": account, "account": account})
-    return {"user": user, "access_token": access_token}
 
-
-def _create_jwt(payload: dict) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    payload["exp"] = expire
+def create_jwt(account_info: dict) -> str:
+    payload = {
+        **account_info,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes),
+    }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 

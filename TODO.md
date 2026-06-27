@@ -5,8 +5,8 @@
 ---
 
 ## Current Status
-**Phase 1 complete** — Monorepo scaffold: Vite + React + TypeScript + Tailwind (dark theme), FastAPI backend, docker-compose, Makefile, `/api/health` verified.
-**Next:** Start Phase 2 — Deriv OAuth2 login, User/UserToken DB models, JWT auth.
+**Phase 2 complete** — Deriv OAuth2 login flow. Backend verifies token via Deriv WS, issues JWT. Protected routes reject bad tokens with 401. No DB needed — Deriv owns user data.
+**Next:** Start Phase 3 — Python analysis engine (port JS signal algorithms to FastAPI, WebSocket `/ws/signals`).
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind CSS · FastAPI (Python) · PostgreSQL · Redis
@@ -28,27 +28,6 @@
 ---
 
 ---
-
-## PHASE 2 — Deriv OAuth2 Login
-> Goal: Users log in with their real Deriv account. Session stored as JWT.
-
-- [ ] Register app at https://api.deriv.com/dashboard — get `APP_ID`
-- [ ] Register affiliate account at https://affiliate.deriv.com — get affiliate ID
-- [ ] Backend
-  - [ ] `User` model: id, deriv_account_id, email, currency, country, created_at
-  - [ ] `UserToken` model: user_id, encrypted_token, scope, expires_at
-  - [ ] First Alembic migration: `alembic revision --autogenerate -m "create users"`
-  - [ ] `POST /api/auth/callback` — receives Deriv token, creates/updates user, returns JWT
-  - [ ] `GET /api/auth/me` — returns current user from JWT
-  - [ ] `POST /api/auth/logout` — invalidates session
-  - [ ] JWT middleware protecting all `/api/` routes except `/auth/`
-- [ ] Frontend
-  - [ ] `/login` page — "Sign in with Deriv" button → redirects to Deriv OAuth URL
-  - [ ] `/auth/callback` page — captures `?token1=&acct1=` params, posts to backend, stores JWT
-  - [ ] Auth context/store (Zustand) — `user`, `token`, `isLoggedIn`
-  - [ ] Protected route wrapper component
-  - [ ] Auto-redirect: unauthenticated → `/login`
-- [ ] Commit: `feat: phase 2 - deriv oauth2 login`
 
 ---
 

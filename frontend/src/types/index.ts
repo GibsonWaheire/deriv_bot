@@ -1,10 +1,9 @@
 export interface User {
-  id: string
   deriv_account_id: string
   email: string
   currency: string
   country: string
-  created_at: string
+  balance?: number
 }
 
 export interface Signal {
