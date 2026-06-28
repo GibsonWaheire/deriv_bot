@@ -189,12 +189,18 @@ async def ws_signals_endpoint(websocket: WebSocket):
     """
     FastAPI WebSocket endpoint handler.
     Clients connect with ?token=<JWT> and receive signal/tick/timing messages.
+    Dev bypass: accepts 'dev-token' when DERIV_CLIENT_ID is not configured.
     """
+    from app.core.config import settings
     token = websocket.query_params.get("token", "")
-    user = decode_jwt(token)
-    if not user:
-        await websocket.close(code=4001, reason="Unauthorized")
-        return
+
+    # Dev bypass — allowed when no OAuth client is configured
+    is_dev_token = token == "dev-token" and not settings.deriv_client_id
+    if not is_dev_token:
+        user = decode_jwt(token)
+        if not user:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
 
     await websocket.accept()
     broadcaster.add(websocket)

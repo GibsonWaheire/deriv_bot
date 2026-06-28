@@ -2,27 +2,32 @@ import { useAuthStore } from '@/store/authStore'
 
 interface TopbarProps {
   rtt?: number | null
-  winRate?: number | null
+  balance?: number | null
   tradeCount?: number
   status?: 'offline' | 'connecting' | 'live' | 'error'
 }
 
 const STATUS_DOT: Record<string, string> = {
-  live: 'bg-brand-green shadow-[0_0_6px_2px_rgba(0,212,160,0.5)]',
+  live:       'bg-brand-green shadow-[0_0_6px_2px_rgba(0,212,160,0.5)]',
   connecting: 'bg-brand-yellow animate-pulse',
-  error: 'bg-brand-red shadow-[0_0_6px_2px_rgba(255,60,78,0.5)]',
-  offline: 'bg-ink-muted',
+  error:      'bg-brand-red shadow-[0_0_6px_2px_rgba(255,60,78,0.5)]',
+  offline:    'bg-ink-muted',
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  live: 'Live',
+  live:       'Live',
   connecting: 'Connecting…',
-  error: 'Error',
-  offline: 'Offline',
+  error:      'Error',
+  offline:    'Offline',
 }
 
-export default function Topbar({ rtt, winRate, tradeCount = 0, status = 'offline' }: TopbarProps) {
+export default function Topbar({ rtt, balance, tradeCount = 0, status = 'offline' }: TopbarProps) {
   const { user, clearAuth, isLoggedIn } = useAuthStore()
+
+  // Show balance from props (live) or from stored user (initial)
+  const displayBalance = balance ?? user?.balance ?? null
+  const currency = user?.currency ?? 'USD'
+  const accountType = (user as any)?.account_type ?? ''
 
   return (
     <header className="flex items-center justify-between px-4 h-12 bg-surface-2 border-b border-border shrink-0">
@@ -37,9 +42,15 @@ export default function Topbar({ rtt, winRate, tradeCount = 0, status = 'offline
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Pills */}
-        <Pill label="RTT" value={rtt != null ? `${rtt}ms` : '—'} />
-        <Pill label="Win Rate" value={winRate != null ? `${winRate.toFixed(1)}%` : '—'} valueClass="text-brand-green" />
+        <Pill label="RTT" value={rtt != null ? `${Math.round(rtt)}ms` : '—'} />
+
+        {/* Live balance */}
+        <Pill
+          label={`${currency}${accountType === 'demo' ? ' demo' : ''}`}
+          value={displayBalance != null ? displayBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
+          valueClass="text-brand-green font-semibold"
+        />
+
         <Pill label="Trades" value={String(tradeCount)} />
 
         {/* Status */}
@@ -62,7 +73,15 @@ export default function Topbar({ rtt, winRate, tradeCount = 0, status = 'offline
   )
 }
 
-function Pill({ label, value, valueClass = 'text-ink' }: { label: string; value: string; valueClass?: string }) {
+function Pill({
+  label,
+  value,
+  valueClass = 'text-ink',
+}: {
+  label: string
+  value: string
+  valueClass?: string
+}) {
   return (
     <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-4 border border-border text-xs">
       <span className="text-ink-muted">{label}</span>
