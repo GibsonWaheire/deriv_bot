@@ -10,13 +10,38 @@ export interface Signal {
   symbol: string
   name: string
   strategy: 'digit_match' | 'even_odd' | 'rise_fall' | 'over_under'
-  digit?: number
-  label: string
-  prob: number
-  grade: 'A' | 'B' | 'C'
-  edge: number
+  contract_type: string        // DIGITMATCH | DIGITEVEN | CALL | DIGITOVER …
+  barrier: string              // digit string, or "" for even/odd/rise/fall
+  duration: number             // ticks
+  confidence: number           // 0–1
+  edge: number                 // confidence − 0.5
+  grade: 'A' | 'B'
+  explanation: string          // AI-generated 2-sentence explanation
+  meta: Record<string, unknown>
   fired_at: number
 }
+
+export interface TimingInfo {
+  rtt_ms: number
+  tick_interval_ms: number
+  entry_window_ms: number
+  next_tick_in_ms: number
+}
+
+export interface TickMessage {
+  type: 'tick'
+  symbol: string
+  digit: number
+  price: number
+  epoch: number
+}
+
+export type WsMessage =
+  | { type: 'signal'; data: Signal[] }
+  | TickMessage
+  | ({ type: 'timing' } & TimingInfo)
+  | { type: 'ping' }
+  | { type: 'pong' }
 
 export interface Trade {
   id: string
