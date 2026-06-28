@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Signal, TimingInfo, TickMessage } from '@/types'
+import type { Signal, TimingInfo, Snapshot } from '@/types'
 import { useAuthStore } from '@/store/authStore'
 
-export interface SignalsState {
+export interface SymbolSnapshot {
   signals: Signal[]
-  ticksBySymbol: Record<string, TickMessage[]>
-  timing: TimingInfo | null
-  timingAt: number          // Date.now() when the last timing msg arrived
+  tickCount: number
+  refreshesIn: number
+  updatedAt: number    // Date.now() when snapshot arrived
+}
+
+export interface SignalsState {
+  // Best signal across all symbols (highest confidence)
+  topSignal: Signal | null
+  // Per-symbol snapshots (stable predictions)
+  snapshots: Record<string, SymbolSnapshot>
+  // Timing per symbol
+  timing: Record<string, TimingInfo & { receivedAt: number }>
   status: 'offline' | 'connecting' | 'live' | 'error'
   rtt: number | null
   errorMsg: string | null
 }
 
 const INITIAL: SignalsState = {
-  signals: [],
-  ticksBySymbol: {},
-  timing: null,
-  timingAt: 0,
+  topSignal: null,
+  snapshots: {},
+  timing: {},
   status: 'offline',
   rtt: null,
   errorMsg: null,
@@ -51,27 +59,38 @@ export function useSignals() {
       if (!alive.current) return
       try {
         const msg = JSON.parse(data)
-        if (msg.type === 'signal') {
-          setState(s => ({ ...s, signals: msg.data }))
-        } else if (msg.type === 'tick') {
-          const t: TickMessage = msg
-          setState(s => ({
-            ...s,
-            ticksBySymbol: {
-              ...s.ticksBySymbol,
-              [t.symbol]: [
-                ...(s.ticksBySymbol[t.symbol] ?? []).slice(-99),
-                t,
-              ],
-            },
-          }))
+
+        if (msg.type === 'snapshot') {
+          const snap: Snapshot = msg
+          setState(s => {
+            const updated: Record<string, SymbolSnapshot> = {
+              ...s.snapshots,
+              [snap.symbol]: {
+                signals: snap.signals,
+                tickCount: snap.tick_count,
+                refreshesIn: snap.refreshes_in,
+                updatedAt: Date.now(),
+              },
+            }
+            // Recalculate top signal across all symbols
+            const all: Signal[] = Object.values(updated).flatMap(ss => ss.signals)
+            all.sort((a, b) => b.confidence - a.confidence)
+            return { ...s, snapshots: updated, topSignal: all[0] ?? null }
+          })
         } else if (msg.type === 'timing') {
-          const { rtt_ms, tick_interval_ms, entry_window_ms, next_tick_in_ms } = msg
           setState(s => ({
             ...s,
-            rtt: rtt_ms,
-            timingAt: Date.now(),
-            timing: { rtt_ms, tick_interval_ms, entry_window_ms, next_tick_in_ms },
+            rtt: msg.rtt_ms,
+            timing: {
+              ...s.timing,
+              [msg.symbol]: {
+                rtt_ms: msg.rtt_ms,
+                tick_interval_ms: msg.tick_interval_ms,
+                entry_window_ms: msg.entry_window_ms,
+                next_tick_in_ms: msg.next_tick_in_ms,
+                receivedAt: Date.now(),
+              },
+            },
           }))
         } else if (msg.type === 'ping') {
           ws.send('ping')
@@ -91,7 +110,6 @@ export function useSignals() {
         return
       }
       setState(s => ({ ...s, status: 'offline' }))
-      // Auto-reconnect after 4s
       retryRef.current = setTimeout(() => {
         if (alive.current) connect()
       }, 4000)
@@ -102,17 +120,17 @@ export function useSignals() {
     if (retryRef.current) clearTimeout(retryRef.current)
     wsRef.current?.close()
     wsRef.current = null
-    setState(s => ({ ...s, status: 'offline' }))
+    setState(INITIAL)
   }, [])
 
+  // Do NOT auto-connect — only connect when explicitly called
   useEffect(() => {
     alive.current = true
-    if (token) connect()
     return () => {
       alive.current = false
       disconnect()
     }
-  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { ...state, connect, disconnect }
 }

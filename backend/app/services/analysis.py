@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-MIN_OVER_UNDER_EDGE = 0.10  # minimum deviation from theoretical to signal OVER/UNDER
-MIN_EVEN_ODD_EDGE  = 0.05  # minimum deviation from 50% to signal EVEN/ODD
-MIN_STREAK_REVERSAL = 6    # streak length to trigger reversal signal
+MIN_OVER_UNDER_EDGE = 0.07  # minimum deviation from theoretical to signal OVER/UNDER
+MIN_EVEN_ODD_EDGE  = 0.03  # minimum deviation from 50% to signal EVEN/ODD
+MIN_STREAK_REVERSAL = 4    # streak length to trigger reversal signal
 
 
 @dataclass

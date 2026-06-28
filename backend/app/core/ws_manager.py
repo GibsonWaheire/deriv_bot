@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 TRACKED_SYMBOLS = ["1HZ100V", "1HZ10V", "R_100", "R_50"]
-HISTORY_COUNT = 1000  # new Deriv API caps at 1000 ticks
-HEARTBEAT_INTERVAL = 15  # seconds
+HISTORY_COUNT = 1000       # new Deriv API caps at 1000 ticks
+HEARTBEAT_INTERVAL = 15    # seconds
+ANALYSIS_EVERY_N_TICKS = 50  # re-run analysis every N live ticks per symbol
 
 
 def _signal_dict(s: Signal) -> dict:
@@ -64,6 +65,8 @@ class SignalBroadcaster:
         self._digits: dict[str, list[int]] = {s: [] for s in TRACKED_SYMBOLS}
         self._tick_times: dict[str, list[float]] = {s: [] for s in TRACKED_SYMBOLS}
         self._pip_sizes: dict[str, int] = {}
+        self._tick_counts: dict[str, int] = {s: 0 for s in TRACKED_SYMBOLS}
+        self._last_signals: dict[str, list] = {}   # cached signals per symbol
         self._rtt_ms: float = 50.0
         self._started = False
 
@@ -126,38 +129,44 @@ class SignalBroadcaster:
 
             self._digits[symbol].append(digit)
             self._tick_times[symbol].append(epoch)
-            # Keep last 5000
+            self._tick_counts[symbol] += 1
             if len(self._digits[symbol]) > 5000:
                 self._digits[symbol] = self._digits[symbol][-5000:]
                 self._tick_times[symbol] = self._tick_times[symbol][-5000:]
 
-            await self._broadcast({
-                "type": "tick",
-                "symbol": symbol,
-                "digit": digit,
-                "price": price,
-                "epoch": epoch,
-            })
+            # Timing on every tick (needed for entry window countdown)
+            recent_times = self._tick_times[symbol][-20:]
+            interval_ms = estimate_tick_interval(list(recent_times))
+            t_info = timing_info(epoch, self._rtt_ms, interval_ms)
+            await self._broadcast({"type": "timing", "symbol": symbol, **t_info})
 
-            # Run analysis on each tick
-            digits = self._digits[symbol]
-            prices = [float(d) for d in digits]  # use digits as price proxy for rise/fall
-            signals = extract_signals(symbol, digits, prices)
+            # Re-run analysis only every N ticks (stable predictions, not jitter)
+            n = self._tick_counts[symbol]
+            is_first = n == 1   # run immediately after history loads
+            is_refresh = n % ANALYSIS_EVERY_N_TICKS == 0
 
-            if signals:
-                top = signals[0]
-                top_dict = _signal_dict(top)
-                top_dict["explanation"] = await explain_signal(top_dict)
+            if is_first or is_refresh:
+                digits = self._digits[symbol]
+                prices = [float(d) for d in digits]
+                signals = extract_signals(symbol, digits, prices)
 
-                all_dicts = [_signal_dict(s) for s in signals]
-                all_dicts[0]["explanation"] = top_dict["explanation"]
+                # Enrich top signal with AI explanation
+                if signals:
+                    top_dict = _signal_dict(signals[0])
+                    top_dict["explanation"] = await explain_signal(top_dict)
+                    all_dicts = [_signal_dict(s) for s in signals]
+                    all_dicts[0]["explanation"] = top_dict["explanation"]
+                else:
+                    all_dicts = []
 
-                recent_times = self._tick_times[symbol][-20:]
-                interval_ms = estimate_tick_interval(list(recent_times))
-                t_info = timing_info(epoch, self._rtt_ms, interval_ms)
-
-                await self._broadcast({"type": "signal", "data": all_dicts})
-                await self._broadcast({"type": "timing", **t_info})
+                self._last_signals[symbol] = all_dicts
+                await self._broadcast({
+                    "type": "snapshot",
+                    "symbol": symbol,
+                    "signals": all_dicts,
+                    "tick_count": n,
+                    "refreshes_in": ANALYSIS_EVERY_N_TICKS - (n % ANALYSIS_EVERY_N_TICKS),
+                })
 
         return on_tick
 
@@ -175,8 +184,21 @@ class SignalBroadcaster:
                 dead.add(ws)
         self._clients -= dead
 
-    def add(self, ws: WebSocket):
+    async def add(self, ws: WebSocket):
         self._clients.add(ws)
+        # Send current cached snapshots immediately so client doesn't wait
+        for symbol, signals in self._last_signals.items():
+            n = self._tick_counts.get(symbol, 0)
+            try:
+                await ws.send_json({
+                    "type": "snapshot",
+                    "symbol": symbol,
+                    "signals": signals,
+                    "tick_count": n,
+                    "refreshes_in": ANALYSIS_EVERY_N_TICKS - (n % ANALYSIS_EVERY_N_TICKS) if n else ANALYSIS_EVERY_N_TICKS,
+                })
+            except Exception:
+                pass
 
     def remove(self, ws: WebSocket):
         self._clients.discard(ws)
@@ -203,7 +225,7 @@ async def ws_signals_endpoint(websocket: WebSocket):
             return
 
     await websocket.accept()
-    broadcaster.add(websocket)
+    await broadcaster.add(websocket)
     try:
         while True:
             # Keep connection open; client can send pings

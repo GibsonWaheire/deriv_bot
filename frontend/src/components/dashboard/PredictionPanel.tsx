@@ -49,7 +49,7 @@ export default function PredictionPanel({ signal, timing, timingAt, onTrade }: P
   }, [timing, timingAt])
 
   const pct = (signal.confidence * 100).toFixed(1)
-  const edgePct = (signal.edge * 100).toFixed(1)
+  const edgePct = ((signal.confidence - 0.5) * 100).toFixed(1)
   const labelColor = CONTRACT_COLOR[signal.contract_type] ?? 'text-ink'
   const gradeColor = GRADE_COLOR[signal.grade] ?? 'text-ink'
 

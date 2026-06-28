@@ -36,10 +36,17 @@ export interface TickMessage {
   epoch: number
 }
 
+export interface Snapshot {
+  symbol: string
+  signals: Signal[]
+  tick_count: number
+  refreshes_in: number   // ticks until next analysis refresh
+}
+
 export type WsMessage =
-  | { type: 'signal'; data: Signal[] }
+  | { type: 'snapshot' } & Snapshot
   | TickMessage
-  | ({ type: 'timing' } & TimingInfo)
+  | ({ type: 'timing'; symbol: string } & TimingInfo)
   | { type: 'ping' }
   | { type: 'pong' }
 
