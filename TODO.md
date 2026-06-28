@@ -16,8 +16,25 @@
 ---
 
 ## Current Status
-**Phase 3 complete** — AI signal engine, Deriv WS client, timing engine, Claude AI explainer, WebSocket broadcaster, and Trade API all built and tested (36/36 tests pass).
-**Next:** Phase 4 — Full Dashboard UI (signal tray, trade modal, instrument cards, journal, live balance).
+**Phase 4 complete** — Full trading terminal UI shipped and refined.
+- Snapshot-based predictions (refresh every 50 ticks, not per-tick — no more flickering)
+- Manual connect (sidebar button, not auto-connect on mount)
+- PredictionPanel hero: stable target, confidence bar, AI explanation, live entry countdown
+- Signal queue: ranked list of all other opportunities below the hero
+- Trade modal: stake selector, live payout quote, timing-aware execution
+- Journal page: real trade history from Deriv profit_table, paginated, stats bar
+- Live balance in topbar
+- All signals are edge-based (deviation from theoretical), not raw probability
+- OVER/UNDER ≥7% edge, EVEN/ODD ≥3%, streak reversal ≥4 ticks, DIGITMATCH Markov+gap
+
+**Bug fixes shipped today:**
+- req_id must be integer (not string) — Deriv rejected all WS requests silently
+- New Deriv API caps history at 1,000 ticks (not 5,000)
+- Dev bypass: WS accepts dev-token when DERIV_CLIENT_ID not set
+- CORS extended to port 5174
+
+**Next session: Phase 5 — Automation Bot**
+Resume from: `backend/app/services/bot.py` + `backend/app/api/bot.py` + frontend `/auto` page
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind · FastAPI · Redis · Claude API
@@ -198,6 +215,7 @@ Duration unit: `"t"` = ticks (1–5 for digits), `"s"` = seconds, `"m"` = minute
 ---
 
 ## PHASE 3 — AI Signal Engine + Timing-Aware Execution ✓ COMPLETE
+## PHASE 4 — Full Dashboard UI ✓ COMPLETE
 > Backend does all analysis. Fires signal only when confidence clears threshold.
 > Signal = { digit, strategy, duration, confidence, entry_window_ms, live_payout }
 
