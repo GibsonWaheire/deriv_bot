@@ -2,10 +2,10 @@
 Deriv WebSocket client — public (ticks) and trading (buy/sell) connections.
 """
 import asyncio
+import itertools
 import json
 import logging
 import time
-import uuid
 from typing import Callable
 
 import httpx
@@ -18,6 +18,8 @@ from app.core.redis_client import get_redis
 logger = logging.getLogger(__name__)
 
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
+
+_req_id_counter = itertools.count(1)  # Deriv requires integer req_id
 DERIV_REST_BASE = "https://api.derivws.com"
 
 
@@ -32,7 +34,7 @@ class DerivWS:
     def __init__(self, ws_url: str):
         self._url = ws_url
         self._ws = None
-        self._pending: dict[str, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future] = {}
         self._subscriptions: dict[str, Callable] = {}   # sub_id → callback
         self._topic_subs: dict[str, list[Callable]] = {}  # msg_type → [callbacks]
         self._running = False
@@ -111,7 +113,7 @@ class DerivWS:
 
     async def send(self, payload: dict, timeout: float = 10.0) -> dict:
         """Send a request and await its paired response."""
-        req_id = uuid.uuid4().hex[:8]
+        req_id = next(_req_id_counter)  # must be int — Deriv rejects strings
         payload = {**payload, "req_id": req_id}
         loop = asyncio.get_running_loop()
         fut = loop.create_future()

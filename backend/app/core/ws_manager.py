@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 TRACKED_SYMBOLS = ["1HZ100V", "1HZ10V", "R_100", "R_50"]
-HISTORY_COUNT = 5000
+HISTORY_COUNT = 1000  # new Deriv API caps at 1000 ticks
 HEARTBEAT_INTERVAL = 15  # seconds
 
 
