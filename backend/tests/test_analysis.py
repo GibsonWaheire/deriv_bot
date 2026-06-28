@@ -111,44 +111,75 @@ class TestScoreDigitMatch:
 
 
 class TestScoreEvenOdd:
-    def test_probs_sum_to_one(self):
+    def test_returns_edge_and_side(self):
         result = score_even_odd(DIGITS_100)
-        assert abs(result["pEven"] + result["pOdd"] - 1.0) < 0.0001
+        assert "edge" in result
+        assert "side" in result
+        assert result["side"] in ("even", "odd")
 
-    def test_empty_returns_half(self):
+    def test_edge_non_negative(self):
+        result = score_even_odd(DIGITS_100)
+        assert result["edge"] >= 0.0
+
+    def test_empty_returns_zero_edge(self):
         result = score_even_odd([])
-        assert result["pEven"] == 0.5
-        assert result["pOdd"] == 0.5
+        assert result["edge"] == 0.0
 
     def test_streak_non_negative(self):
         result = score_even_odd(DIGITS_100)
         assert result["streak"] >= 0
 
+    def test_observed_bounded(self):
+        result = score_even_odd(DIGITS_100)
+        assert 0.0 <= result["observed"] <= 1.0
+
 
 class TestScoreOverUnder:
-    def test_threshold_in_range(self):
+    def test_returns_none_or_dict(self):
         result = score_over_under(DIGITS_100)
-        assert 1 <= result["best_threshold"] <= 8
+        assert result is None or isinstance(result, dict)
 
-    def test_probs_keys(self):
-        result = score_over_under(DIGITS_100)
-        assert set(result["probs"].keys()) == set(range(1, 9))
+    def test_threshold_in_range_when_present(self):
+        # Use a biased sequence to guarantee a result
+        biased = [9] * 80 + [0] * 20  # digit 9 appears 80% — OVER 8 theoretical=10%, edge=70%
+        result = score_over_under(biased)
+        assert result is not None
+        assert 1 <= result["threshold"] <= 8
 
-    def test_probs_valid(self):
-        result = score_over_under(DIGITS_100)
-        for p in result["probs"].values():
-            assert 0.0 <= p <= 1.0
+    def test_edge_exceeds_minimum(self):
+        biased = [9] * 80 + [0] * 20
+        result = score_over_under(biased)
+        assert result is not None
+        assert result["edge"] >= 0.10
+
+    def test_no_signal_on_uniform(self):
+        # Perfectly uniform distribution → no deviation → no signal
+        uniform = list(range(10)) * 10  # 10 of each digit
+        result = score_over_under(uniform)
+        assert result is None
 
 
 class TestScoreRiseFall:
-    def test_probs_sum_to_one(self):
-        result = score_rise_fall(PRICES_100)
-        assert abs(result["pRise"] + result["pFall"] - 1.0) < 0.0001
+    def test_returns_none_on_short_streak(self):
+        # Alternating prices never build a streak → no signal
+        alternating = [100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0]
+        result = score_rise_fall(alternating)
+        assert result is None
 
-    def test_reversal_prob_bounded(self):
-        result = score_rise_fall(PRICES_100)
-        assert 0.0 <= result["reversal_prob"] <= 1.0
+    def test_returns_signal_on_long_streak(self):
+        # 7 consecutive rises (needs ≥10 prices) → reversal signal
+        streak_prices = [100.0 + i for i in range(11)]  # 10 diffs, all rising
+        result = score_rise_fall(streak_prices)
+        assert result is not None
+        assert result["direction"] == "fall"  # predict reversal
+        assert result["edge"] > 0
 
-    def test_too_short_returns_half(self):
+    def test_edge_positive_on_reversal(self):
+        streak_prices = [100.0 + i for i in range(10)]
+        result = score_rise_fall(streak_prices)
+        assert result is not None
+        assert result["edge"] > 0.0
+
+    def test_returns_none_on_insufficient_data(self):
         result = score_rise_fall([1.0])
-        assert result["pRise"] == 0.5
+        assert result is None

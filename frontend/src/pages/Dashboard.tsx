@@ -1,43 +1,30 @@
 import { useEffect, useState } from 'react'
 import type { Signal } from '@/types'
 import { useSignals } from '@/hooks/useSignals'
-import SignalTray from '@/components/dashboard/SignalTray'
-import InstrumentCard from '@/components/dashboard/InstrumentCard'
+import PredictionPanel from '@/components/dashboard/PredictionPanel'
+import SignalCard from '@/components/dashboard/SignalCard'
 import TradeModal from '@/components/dashboard/TradeModal'
 
-const SYMBOL_NAMES: Record<string, string> = {
-  '1HZ100V': 'Volatility 100 (1s)',
-  '1HZ10V':  'Volatility 10 (1s)',
-  'R_100':   'Volatility 100',
-  'R_50':    'Volatility 50',
-  'R_10':    'Volatility 10',
-  'R_25':    'Volatility 25',
-}
-
 export default function Dashboard() {
-  const { signals, ticksBySymbol, timing, status, rtt, errorMsg } = useSignals()
+  const { signals, timing, timingAt, status, rtt, errorMsg } = useSignals()
   const [tradeSignal, setTradeSignal] = useState<Signal | null>(null)
 
-  // Propagate status + rtt up to Layout via custom events
+  // Propagate status + rtt to Layout topbar
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('dst:status', { detail: status }))
   }, [status])
 
   useEffect(() => {
-    if (rtt != null) {
-      window.dispatchEvent(new CustomEvent('dst:rtt', { detail: rtt }))
-    }
+    if (rtt != null) window.dispatchEvent(new CustomEvent('dst:rtt', { detail: rtt }))
   }, [rtt])
 
-  // Unique symbols with live ticks
-  const activeSymbols = Object.keys(ticksBySymbol).filter(
-    s => (ticksBySymbol[s]?.length ?? 0) > 0
-  )
+  const topSignal = signals[0] ?? null
+  const queueSignals = signals.slice(1)
 
   return (
-    <div className="p-5 space-y-6 min-h-full">
+    <div className="p-5 space-y-5 min-h-full">
 
-      {/* Status banner */}
+      {/* Connection status banners */}
       {status === 'error' && (
         <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-red/10 border border-brand-red/25 text-brand-red text-xs">
           <span className="font-semibold">Connection error</span>
@@ -45,59 +32,73 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Signal tray */}
-      <SignalTray signals={signals} status={status} onTrade={setTradeSignal} />
-
-      {/* Instrument grid */}
-      <div className="space-y-2">
-        <div className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider px-1">
-          Instruments
-          {activeSymbols.length > 0 && (
-            <span className="ml-2 text-ink-dim normal-case">
-              {activeSymbols.length} live
-            </span>
+      {/* === TOP SIGNAL — full hero prediction === */}
+      {topSignal ? (
+        <PredictionPanel
+          signal={topSignal}
+          timing={timing}
+          timingAt={timingAt}
+          onTrade={setTradeSignal}
+        />
+      ) : (
+        <div className="rounded-2xl border border-border bg-surface-2 p-10 flex flex-col items-center justify-center text-center gap-4">
+          {status === 'connecting' || status === 'live' ? (
+            <>
+              <div className="w-8 h-8 border-2 border-brand-blue border-t-transparent rounded-full animate-spin" />
+              <div className="text-sm text-ink-muted">
+                {status === 'connecting' ? 'Connecting to Deriv…' : 'Loading tick history and computing signals…'}
+              </div>
+              <div className="text-xs text-ink-muted opacity-60">
+                Fetching 1,000 ticks per symbol · Running Markov analysis
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-4xl text-ink-muted">◎</div>
+              <p className="text-sm text-ink-muted">
+                Click <span className="text-ink font-medium">Connect &amp; Analyze</span> in the sidebar
+              </p>
+              <p className="text-xs text-ink-muted opacity-60">
+                Signals appear when a statistical edge is detected — not just high base probability.
+              </p>
+            </>
           )}
         </div>
+      )}
 
-        {activeSymbols.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
-            <div className="text-4xl text-ink-muted">◎</div>
-            {status === 'connecting' ? (
-              <>
-                <div className="w-6 h-6 border-2 border-brand-blue border-t-transparent rounded-full animate-spin" />
-                <p className="text-ink-muted text-sm">Connecting to Deriv…</p>
-              </>
-            ) : status === 'live' ? (
-              <>
-                <div className="w-6 h-6 border-2 border-brand-green border-t-transparent rounded-full animate-spin" />
-                <p className="text-ink-muted text-sm">Loading tick history…</p>
-              </>
-            ) : (
-              <>
-                <p className="text-ink-muted text-sm">
-                  Click <span className="text-ink font-medium">Connect &amp; Analyze</span> in the sidebar
-                </p>
-                <p className="text-ink-muted text-xs">
-                  Fetches 5,000 real ticks, runs Markov analysis, and fires live signals.
-                </p>
-              </>
-            )}
+      {/* === SIGNAL QUEUE === */}
+      {queueSignals.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">
+              Signal Queue
+            </span>
+            <span className="text-[10px] text-ink-muted">
+              — next best opportunities across all instruments
+            </span>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-            {activeSymbols.map(symbol => (
-              <InstrumentCard
-                key={symbol}
-                symbol={symbol}
-                name={SYMBOL_NAMES[symbol] ?? symbol}
-                ticks={ticksBySymbol[symbol] ?? []}
-                signals={signals.filter(s => s.symbol === symbol)}
-                rtt={rtt}
+          <div className="space-y-1.5">
+            {queueSignals.map((signal, i) => (
+              <SignalCard
+                key={`${signal.symbol}-${signal.strategy}-${i}`}
+                rank={i + 2}
+                signal={signal}
+                onTrade={setTradeSignal}
               />
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* No signals yet but live — show why */}
+      {status === 'live' && signals.length === 0 && topSignal === null && (
+        <div className="text-center text-xs text-ink-muted py-4 space-y-1">
+          <div>No signals above confidence threshold yet.</div>
+          <div className="opacity-60">
+            Signals require genuine statistical edge — high base-probability contracts (UNDER 8, OVER 1) are filtered out.
+          </div>
+        </div>
+      )}
 
       {/* Trade modal */}
       {tradeSignal && (

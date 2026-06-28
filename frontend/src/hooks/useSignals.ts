@@ -6,6 +6,7 @@ export interface SignalsState {
   signals: Signal[]
   ticksBySymbol: Record<string, TickMessage[]>
   timing: TimingInfo | null
+  timingAt: number          // Date.now() when the last timing msg arrived
   status: 'offline' | 'connecting' | 'live' | 'error'
   rtt: number | null
   errorMsg: string | null
@@ -15,6 +16,7 @@ const INITIAL: SignalsState = {
   signals: [],
   ticksBySymbol: {},
   timing: null,
+  timingAt: 0,
   status: 'offline',
   rtt: null,
   errorMsg: null,
@@ -68,6 +70,7 @@ export function useSignals() {
           setState(s => ({
             ...s,
             rtt: rtt_ms,
+            timingAt: Date.now(),
             timing: { rtt_ms, tick_interval_ms, entry_window_ms, next_tick_in_ms },
           }))
         } else if (msg.type === 'ping') {

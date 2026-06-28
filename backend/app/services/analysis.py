@@ -1,29 +1,41 @@
 """
-Analysis engine — Markov transition matrix, statistical scoring, signal extraction.
+Analysis engine — signal extraction based on statistical EDGE, not raw probability.
+
+Key principle: confidence reflects deviation from the theoretical baseline.
+- DIGITMATCH base = 10%  → signal only when Markov + gap + deficit shows true excess
+- EVEN/ODD base = 50%   → signal only when observed rate OR streak reversal creates edge
+- RISE/FALL             → signal only on streak reversal (direction alone is noise)
+- OVER/UNDER            → signal only when observed rate exceeds theoretical by ≥ 10 pp
+  e.g. OVER 2 theoretical = 70%, so we need observed > 80% to signal
+  This eliminates "always high" artefacts like UNDER 8 (80% theoretical).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
 
+MIN_OVER_UNDER_EDGE = 0.10  # minimum deviation from theoretical to signal OVER/UNDER
+MIN_EVEN_ODD_EDGE  = 0.05  # minimum deviation from 50% to signal EVEN/ODD
+MIN_STREAK_REVERSAL = 6    # streak length to trigger reversal signal
+
 
 @dataclass
 class Signal:
     symbol: str
     name: str
-    strategy: str           # digit_match | even_odd | rise_fall | over_under
-    contract_type: str      # DIGITMATCH | DIGITEVEN | CALL | DIGITOVER …
-    barrier: str            # digit string, or "" for even/odd/rise/fall
-    duration: int           # ticks
-    confidence: float       # 0–1
-    edge: float             # confidence − 0.5
+    strategy: str            # digit_match | even_odd | rise_fall | over_under
+    contract_type: str       # DIGITMATCH | DIGITEVEN | CALL | DIGITOVER …
+    barrier: str             # digit string, or ""
+    duration: int            # ticks
+    confidence: float        # 0–1 (deviation-based, not raw probability)
+    edge: float              # confidence − 0.5
     grade: Literal["A", "B"]
     explanation: str = ""
     meta: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
-# Core statistical functions
+# Core statistics
 # ---------------------------------------------------------------------------
 
 def build_transition_matrix(digits: list[int]) -> list[list[float]]:
@@ -38,46 +50,42 @@ def build_transition_matrix(digits: list[int]) -> list[list[float]]:
     matrix = []
     for row in counts:
         total = sum(row)
-        if total == 0:
-            matrix.append([0.1] * 10)
-        else:
-            matrix.append([c / total for c in row])
+        matrix.append([c / total for c in row] if total else [0.1] * 10)
     return matrix
 
 
 def _gap_score(digits: list[int], target: int) -> float:
-    """Normalised ticks-since-last-appearance (0–1). 1 = very overdue."""
+    """Ticks since target last appeared, normalised 0–1 (1 = very overdue)."""
     for i, d in enumerate(reversed(digits)):
         if d == target:
             return min(i / 50.0, 1.0)
     return 1.0
 
 
-def _current_streak(seq: list, classify) -> int:
-    """Length of current same-class streak at the end of seq."""
+def _streak_length(seq: list, classify) -> int:
+    """Length of current run of same class at tail of seq."""
     if not seq:
         return 0
     cls = classify(seq[-1])
-    streak = 0
+    count = 0
     for v in reversed(seq):
         if classify(v) == cls:
-            streak += 1
+            count += 1
         else:
             break
-    return streak
+    return count
 
 
 # ---------------------------------------------------------------------------
-# Per-strategy scoring
+# Strategy scorers — all return EDGE (deviation from baseline)
 # ---------------------------------------------------------------------------
 
-def score_digit_match(
-    digits: list[int], matrix: list[list[float]]
-) -> list[dict]:
+def score_digit_match(digits: list[int], matrix: list[list[float]]) -> list[dict]:
     """
     Score each digit 0–9 for DIGITMATCH.
-    composite = 0.5 * markov_prob + 0.3 * freq_deficit_normalised + 0.2 * gap_score
-    Returns list sorted by composite desc.
+    composite = 0.5×markov_prob + 0.3×freq_deficit_norm + 0.2×gap_score
+    All three components reward digits that are statistically overdue / predicted.
+    Sorted by composite desc.
     """
     n = len(digits)
     freq = [digits.count(d) / n for d in range(10)] if n else [0.1] * 10
@@ -85,7 +93,7 @@ def score_digit_match(
     results = []
     for d in range(10):
         markov = matrix[last][d]
-        deficit = max(0.1 - freq[d], 0.0)
+        deficit = max(0.1 - freq[d], 0.0)    # positive when digit is underrepresented
         gap = _gap_score(digits, d)
         composite = 0.5 * markov + 0.3 * (deficit * 10) + 0.2 * gap
         results.append({
@@ -101,60 +109,119 @@ def score_digit_match(
 
 
 def score_even_odd(digits: list[int]) -> dict:
-    """Score DIGITEVEN / DIGITODD."""
+    """
+    Edge = |observed_rate − 0.5|.
+    Streak reversal adds additional edge when current run is long.
+    """
     if not digits:
-        return {"pEven": 0.5, "pOdd": 0.5, "streak": 0}
+        return {"edge": 0.0, "side": "even", "observed": 0.5, "streak": 0}
     n = len(digits)
-    p_even = sum(1 for d in digits if d % 2 == 0) / n
-    streak = _current_streak(digits, lambda d: d % 2)
+    observed_even = sum(1 for d in digits if d % 2 == 0) / n
+    observed_odd  = 1.0 - observed_even
+    streak = _streak_length(digits, lambda d: d % 2)
+
+    # Favour the side with higher observed rate
+    if observed_even >= observed_odd:
+        side, observed = "even", observed_even
+    else:
+        side, observed = "odd", observed_odd
+
+    base_edge = observed - 0.5
+
+    # Streak reversal: long run of one class → predict the other
+    reversal_bonus = max((streak - MIN_STREAK_REVERSAL) * 0.02, 0.0) if streak >= MIN_STREAK_REVERSAL else 0.0
+    if reversal_bonus > 0:
+        # Flip to the opposite side
+        side = "odd" if side == "even" else "even"
+        observed = 1.0 - observed
+
+    edge = base_edge + reversal_bonus
     return {
-        "pEven": round(p_even, 4),
-        "pOdd": round(1 - p_even, 4),
+        "edge": round(edge, 4),
+        "side": side,
+        "observed": round(observed, 4),
         "streak": streak,
     }
 
 
-def score_rise_fall(prices: list[float]) -> dict:
-    """Score CALL / PUT based on directional momentum."""
-    if len(prices) < 2:
-        return {"pRise": 0.5, "pFall": 0.5, "streak": 0, "reversal_prob": 0.5}
+def score_rise_fall(prices: list[float]) -> dict | None:
+    """
+    Only signals on streak reversal (raw direction is noise).
+    Returns None when no actionable reversal is detected.
+    """
+    if len(prices) < 10:
+        return None
     diffs = [prices[i + 1] - prices[i] for i in range(len(prices) - 1)]
-    n = len(diffs)
-    p_rise = sum(1 for d in diffs if d > 0) / n
-    streak = _current_streak(diffs, lambda d: 1 if d > 0 else 0)
-    # Long streak → mean reversion signal
-    reversal_prob = min(0.5 + streak * 0.05, 0.85)
+    streak = _streak_length(diffs, lambda d: 1 if d > 0 else 0)
+    if streak < MIN_STREAK_REVERSAL:
+        return None
+
+    # Predict reversal of current direction
+    current_up = diffs[-1] > 0
+    direction = "fall" if current_up else "rise"
+    edge = min((streak - MIN_STREAK_REVERSAL) * 0.025, 0.30)
     return {
-        "pRise": round(p_rise, 4),
-        "pFall": round(1 - p_rise, 4),
+        "direction": direction,
         "streak": streak,
-        "reversal_prob": round(reversal_prob, 4),
+        "edge": round(edge, 4),
     }
 
 
-def score_over_under(digits: list[int]) -> dict:
+def score_over_under(digits: list[int]) -> dict | None:
     """
-    DIGITOVER / DIGITUNDER for thresholds 1–8.
-    Returns best_threshold (highest edge from 50%) and probs dict.
+    For each threshold 1–8, compute observed vs theoretical win rate.
+    Only returns a result when the deviation is ≥ MIN_OVER_UNDER_EDGE.
+
+    Theoretical:
+      DIGITOVER t: P(d > t) = (9 − t) / 10
+      DIGITUNDER t: P(d < t) = t / 10   (note: strict less-than)
+
+    This eliminates 'always-high' signals like UNDER 8 (theoretical 80%)
+    unless the last 1000 ticks show > 90%.
     """
     if not digits:
-        return {"best_threshold": 4, "probs": {t: 0.5 for t in range(1, 9)}}
+        return None
     n = len(digits)
-    probs = {t: round(sum(1 for d in digits if d > t) / n, 4) for t in range(1, 9)}
-    best_t = max(probs, key=lambda t: abs(probs[t] - 0.5))
-    return {"best_threshold": best_t, "probs": probs}
+    best: dict | None = None
+    best_edge = 0.0
+
+    for t in range(1, 9):
+        # DIGITOVER t
+        theo_over = (9 - t) / 10
+        obs_over  = sum(1 for d in digits if d > t) / n
+        over_edge = obs_over - theo_over
+
+        # DIGITUNDER t  (wins when d < t, i.e. d ≤ t−1)
+        theo_under = t / 10
+        obs_under  = sum(1 for d in digits if d < t) / n
+        under_edge = obs_under - theo_under
+
+        for side, edge, contract_type, obs, theo in [
+            ("over",  over_edge,  "DIGITOVER",  obs_over,  theo_over),
+            ("under", under_edge, "DIGITUNDER", obs_under, theo_under),
+        ]:
+            if edge > best_edge:
+                best_edge = edge
+                best = {
+                    "threshold": t,
+                    "side": side,
+                    "contract_type": contract_type,
+                    "edge": round(edge, 4),
+                    "observed": round(obs, 4),
+                    "theoretical": round(theo, 4),
+                }
+
+    if best and best_edge >= MIN_OVER_UNDER_EDGE:
+        return best
+    return None
 
 
 def detect_volatility_regime(prices: list[float], window: int = 50) -> str:
-    """Low / medium / high based on mean absolute return of recent prices."""
+    """Low / medium / high based on mean absolute return of recent ticks."""
     sample = prices[-window:] if len(prices) >= window else prices
     if len(sample) < 2:
         return "medium"
-    returns = [
-        abs(sample[i + 1] - sample[i]) / sample[i]
-        for i in range(len(sample) - 1)
-        if sample[i] != 0
-    ]
+    returns = [abs(sample[i+1] - sample[i]) / sample[i] for i in range(len(sample)-1) if sample[i]]
     if not returns:
         return "medium"
     avg = sum(returns) / len(returns)
@@ -166,7 +233,6 @@ def detect_volatility_regime(prices: list[float], window: int = 50) -> str:
 
 
 def recommend_duration(volatility_regime: str) -> int:
-    """Tick duration: 5 ticks in low vol, 2 in medium, 1 in high."""
     return {"low": 5, "medium": 2, "high": 1}[volatility_regime]
 
 
@@ -183,7 +249,7 @@ def _grade(confidence: float) -> str | None:
 
 
 def _symbol_name(symbol: str) -> str:
-    names = {
+    return {
         "1HZ100V": "Volatility 100 (1s)",
         "1HZ10V":  "Volatility 10 (1s)",
         "1HZ25V":  "Volatility 25 (1s)",
@@ -194,8 +260,7 @@ def _symbol_name(symbol: str) -> str:
         "R_25":    "Volatility 25",
         "R_50":    "Volatility 50",
         "R_75":    "Volatility 75",
-    }
-    return names.get(symbol, symbol)
+    }.get(symbol, symbol)
 
 
 def extract_signals(
@@ -203,7 +268,7 @@ def extract_signals(
 ) -> list[Signal]:
     """
     Run all strategies and return Grade A/B signals sorted by confidence desc.
-    Filters anything below 55% confidence.
+    All confidences are deviation-based — not raw win probability.
     """
     if len(digits) < 20:
         return []
@@ -217,7 +282,7 @@ def extract_signals(
     # --- DIGITMATCH ---
     scores = score_digit_match(digits, matrix)
     best = scores[0]
-    # Map composite (roughly 0–1) to a confidence that can reach grade thresholds
+    # composite ∈ [0, ~0.6]; map to confidence around [0.50, 0.95]
     confidence = min(0.50 + best["composite"] * 1.5, 0.95)
     grade = _grade(confidence)
     if grade:
@@ -236,84 +301,71 @@ def extract_signals(
                 "freq_deficit": best["freq_deficit"],
                 "gap_score": best["gap_score"],
                 "last_digit": digits[-1],
-                "top_digits": [s["digit"] for s in scores[:3]],
                 "regime": regime,
             },
         ))
 
     # --- EVEN / ODD ---
     eo = score_even_odd(digits)
-    streak = eo["streak"]
-    for side, base_prob in [("even", eo["pEven"]), ("odd", eo["pOdd"])]:
-        # Boost confidence when on a long streak (mean reversion)
-        adj = base_prob + (0.1 if streak >= 5 else 0.0)
-        adj = min(adj, 0.95)
-        grade = _grade(adj)
+    if eo["edge"] >= MIN_EVEN_ODD_EDGE:
+        confidence = min(0.50 + eo["edge"], 0.95)
+        grade = _grade(confidence)
         if grade:
+            ct = "DIGITEVEN" if eo["side"] == "even" else "DIGITODD"
             signals.append(Signal(
                 symbol=symbol, name=name,
-                strategy="even_odd",
-                contract_type="DIGITEVEN" if side == "even" else "DIGITODD",
+                strategy="even_odd", contract_type=ct,
                 barrier="", duration=duration,
-                confidence=round(adj, 4),
-                edge=round(adj - 0.5, 4),
+                confidence=round(confidence, 4),
+                edge=round(eo["edge"], 4),
                 grade=grade,
-                meta={"side": side, "base_prob": base_prob, "streak": streak},
+                meta={
+                    "side": eo["side"],
+                    "observed": eo["observed"],
+                    "streak": eo["streak"],
+                },
             ))
-            break  # take the stronger side only
 
     # --- RISE / FALL ---
     rf_prices = prices[-200:] if len(prices) >= 200 else prices
     rf = score_rise_fall(rf_prices)
-    streak = rf["streak"]
-    # Use reversal signal on long streaks, else raw probability
-    if streak >= 5:
-        confidence = rf["reversal_prob"]
-        direction = "fall" if rf["pRise"] > 0.5 else "rise"
-    else:
-        if rf["pRise"] >= rf["pFall"]:
-            confidence, direction = rf["pRise"], "rise"
-        else:
-            confidence, direction = rf["pFall"], "fall"
-    grade = _grade(confidence)
-    if grade:
-        signals.append(Signal(
-            symbol=symbol, name=name,
-            strategy="rise_fall",
-            contract_type="CALL" if direction == "rise" else "PUT",
-            barrier="", duration=duration,
-            confidence=round(confidence, 4),
-            edge=round(confidence - 0.5, 4),
-            grade=grade,
-            meta={
-                "direction": direction,
-                "pRise": rf["pRise"],
-                "pFall": rf["pFall"],
-                "streak": streak,
-                "reversal_prob": rf["reversal_prob"],
-            },
-        ))
+    if rf:
+        confidence = min(0.50 + rf["edge"], 0.95)
+        grade = _grade(confidence)
+        if grade:
+            ct = "CALL" if rf["direction"] == "rise" else "PUT"
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="rise_fall", contract_type=ct,
+                barrier="", duration=duration,
+                confidence=round(confidence, 4),
+                edge=round(rf["edge"], 4),
+                grade=grade,
+                meta={
+                    "direction": rf["direction"],
+                    "streak": rf["streak"],
+                },
+            ))
 
     # --- OVER / UNDER ---
     ou = score_over_under(digits)
-    t = ou["best_threshold"]
-    p_over = ou["probs"][t]
-    p_under = 1.0 - p_over
-    if p_over >= p_under:
-        confidence, ct = p_over, "DIGITOVER"
-    else:
-        confidence, ct = p_under, "DIGITUNDER"
-    grade = _grade(confidence)
-    if grade:
-        signals.append(Signal(
-            symbol=symbol, name=name,
-            strategy="over_under", contract_type=ct,
-            barrier=str(t), duration=duration,
-            confidence=round(confidence, 4),
-            edge=round(confidence - 0.5, 4),
-            grade=grade,
-            meta={"threshold": t, "p_over": p_over, "p_under": p_under},
-        ))
+    if ou:
+        confidence = min(0.50 + ou["edge"], 0.95)
+        grade = _grade(confidence)
+        if grade:
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="over_under", contract_type=ou["contract_type"],
+                barrier=str(ou["threshold"]), duration=duration,
+                confidence=round(confidence, 4),
+                edge=round(ou["edge"], 4),
+                grade=grade,
+                meta={
+                    "threshold": ou["threshold"],
+                    "observed": ou["observed"],
+                    "theoretical": ou["theoretical"],
+                },
+            ))
 
     signals.sort(key=lambda s: s.confidence, reverse=True)
     return signals
