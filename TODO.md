@@ -16,25 +16,14 @@
 ---
 
 ## Current Status
-**Phase 4 complete** — Full trading terminal UI shipped and refined.
-- Snapshot-based predictions (refresh every 50 ticks, not per-tick — no more flickering)
-- Manual connect (sidebar button, not auto-connect on mount)
-- PredictionPanel hero: stable target, confidence bar, AI explanation, live entry countdown
-- Signal queue: ranked list of all other opportunities below the hero
-- Trade modal: stake selector, live payout quote, timing-aware execution
-- Journal page: real trade history from Deriv profit_table, paginated, stats bar
-- Live balance in topbar
-- All signals are edge-based (deviation from theoretical), not raw probability
-- OVER/UNDER ≥7% edge, EVEN/ODD ≥3%, streak reversal ≥4 ticks, DIGITMATCH Markov+gap
+**Phase 5 complete** — Automation bot shipped.
+- `backend/app/services/bot.py` — BotSession: signal watch loop, proposal check, timing entry, martingale, hard stops
+- `backend/app/api/bot.py` — POST /api/bot/start|pause|resume|stop + GET /api/bot/status
+- `frontend/src/pages/Auto.tsx` — config form, live status, metrics, daily loss bar, decision log
+- Bot registered in main.py, /auto route in App.tsx, "Auto Bot" link in Sidebar
 
-**Bug fixes shipped today:**
-- req_id must be integer (not string) — Deriv rejected all WS requests silently
-- New Deriv API caps history at 1,000 ticks (not 5,000)
-- Dev bypass: WS accepts dev-token when DERIV_CLIENT_ID not set
-- CORS extended to port 5174
-
-**Next session: Phase 5 — Automation Bot**
-Resume from: `backend/app/services/bot.py` + `backend/app/api/bot.py` + frontend `/auto` page
+**Next session: Phase 6 — Affiliate Tracking + DB**
+Resume from: PostgreSQL + SQLAlchemy + Alembic setup
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind · FastAPI · Redis · Claude API

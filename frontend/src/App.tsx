@@ -7,6 +7,7 @@ import AuthCallback from '@/pages/AuthCallback'
 import Dashboard from '@/pages/Dashboard'
 import Journal from '@/pages/Journal'
 import Settings from '@/pages/Settings'
+import Auto from '@/pages/Auto'
 
 const queryClient = new QueryClient()
 
@@ -27,6 +28,7 @@ export default function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/journal" element={<Journal />} />
+            <Route path="/auto" element={<Auto />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

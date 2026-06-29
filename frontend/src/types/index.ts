@@ -61,3 +61,33 @@ export interface Trade {
 }
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'live' | 'error'
+
+export interface BotLogEntry {
+  time: number
+  event: string
+  message: string
+  details: Record<string, unknown>
+}
+
+export interface BotStatus {
+  status: 'idle' | 'running' | 'paused' | 'stopped'
+  trades_total: number
+  trades_won: number
+  win_rate: number
+  net_pnl: number
+  consecutive_losses: number
+  daily_loss: number
+  daily_loss_limit: number
+  current_stake: number
+  current_watch: string
+  config?: {
+    symbols: string[]
+    stake: number
+    min_grade: string
+    max_trades_per_hour: number
+    max_daily_loss_pct: number
+    stake_strategy: string
+    starting_balance: number
+  }
+  log: BotLogEntry[]
+}
