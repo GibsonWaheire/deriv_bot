@@ -53,6 +53,7 @@ export default function Sidebar({
           { to: '/dashboard', label: 'Dashboard' },
           { to: '/journal', label: 'Journal' },
           { to: '/auto', label: 'Auto Bot' },
+          { to: '/admin/affiliate', label: 'Affiliate' },
           { to: '/settings', label: 'Settings' },
         ].map(({ to, label }) => (
           <Link

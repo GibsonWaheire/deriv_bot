@@ -4,12 +4,18 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, health
-from app.api import trade, bot
+from app.api import trade, bot, affiliate
 from app.core.ws_manager import broadcaster, ws_signals_endpoint
+from app.core.database import engine, Base
+import app.models.affiliate  # noqa: F401 — register ORM models
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create DB tables if they don't exist (safe — skips existing tables)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     # Start the Deriv public WS broadcaster on startup
     await broadcaster.start()
     yield
@@ -29,6 +35,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(auth.router, prefix="/api/auth")
 app.include_router(trade.router, prefix="/api/trade")
 app.include_router(bot.router, prefix="/api/bot")
+app.include_router(affiliate.router, prefix="/api/affiliate")
 
 
 @app.websocket("/ws/signals")

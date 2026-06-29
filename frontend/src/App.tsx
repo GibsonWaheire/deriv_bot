@@ -8,6 +8,7 @@ import Dashboard from '@/pages/Dashboard'
 import Journal from '@/pages/Journal'
 import Settings from '@/pages/Settings'
 import Auto from '@/pages/Auto'
+import AffiliateAdmin from '@/pages/AffiliateAdmin'
 
 const queryClient = new QueryClient()
 
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/journal" element={<Journal />} />
             <Route path="/auto" element={<Auto />} />
+            <Route path="/admin/affiliate" element={<AffiliateAdmin />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

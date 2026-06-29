@@ -49,6 +49,11 @@ export async function buildSignupUrl(
 
   sessionStorage.setItem('pkce_verifier', verifier)
   sessionStorage.setItem('oauth_state', state)
+  // Store affiliate params — Deriv doesn't echo them back, so we preserve them here
+  if (affiliateId) sessionStorage.setItem('aff_utm_source', affiliateId)
+  if (sidc)        sessionStorage.setItem('aff_sidc', sidc)
+  if (campaign)    sessionStorage.setItem('aff_utm_campaign', campaign)
+  sessionStorage.setItem('aff_utm_medium', 'affiliate')
 
   const params = new URLSearchParams({
     response_type: 'code',

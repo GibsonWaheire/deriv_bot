@@ -16,14 +16,23 @@
 ---
 
 ## Current Status
-**Phase 5 complete** — Automation bot shipped.
-- `backend/app/services/bot.py` — BotSession: signal watch loop, proposal check, timing entry, martingale, hard stops
-- `backend/app/api/bot.py` — POST /api/bot/start|pause|resume|stop + GET /api/bot/status
-- `frontend/src/pages/Auto.tsx` — config form, live status, metrics, daily loss bar, decision log
-- Bot registered in main.py, /auto route in App.tsx, "Auto Bot" link in Sidebar
+**Phase 6 complete** — Affiliate tracking + DB shipped.
+- PostgreSQL via docker-compose (already scaffolded)
+- `backend/app/core/database.py` — async SQLAlchemy engine + session
+- `backend/app/models/affiliate.py` — ReferredUser ORM model
+- `backend/alembic/` + `alembic.ini` — migration setup (psycopg3 sync driver)
+- `backend/alembic/versions/6a420209_create_referred_users.py` — initial migration
+- `backend/app/api/affiliate.py` — register, first-trade, stats, markup endpoints
+- Auth callback now accepts utm_source/sidc and auto-registers referrals (non-fatal)
+- `frontend/src/lib/pkce.ts` — stores affiliate params in sessionStorage before Deriv redirect
+- `frontend/src/pages/AuthCallback.tsx` — reads + clears affiliate params, passes to backend
+- `frontend/src/pages/AffiliateAdmin.tsx` — /admin/affiliate: stats cards + markup revenue table
+- DB tables auto-created on backend startup (create_all)
 
-**Next session: Phase 6 — Affiliate Tracking + DB**
-Resume from: PostgreSQL + SQLAlchemy + Alembic setup
+**Run DB migration:** `docker compose up -d postgres && .venv/bin/alembic upgrade head`
+
+**Next session: Phase 7 — Subscriptions (Stripe)**
+Resume from: Stripe setup, Subscription model, tier gating on API routes
 
 **Repo:** https://github.com/GibsonWaheire/deriv_bot.git
 **Stack:** Vite · React · TypeScript · Tailwind · FastAPI · Redis · Claude API

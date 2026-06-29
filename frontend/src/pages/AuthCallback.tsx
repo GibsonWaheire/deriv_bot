@@ -33,7 +33,24 @@ export default function AuthCallback() {
     sessionStorage.removeItem('oauth_state')
     sessionStorage.removeItem('pkce_verifier')
 
-    axios.post('/api/auth/callback', { code, code_verifier: codeVerifier })
+    // Read affiliate params stored before the Deriv redirect
+    const utmSource   = sessionStorage.getItem('aff_utm_source')
+    const utmMedium   = sessionStorage.getItem('aff_utm_medium')
+    const utmCampaign = sessionStorage.getItem('aff_utm_campaign')
+    const sidc        = sessionStorage.getItem('aff_sidc')
+    sessionStorage.removeItem('aff_utm_source')
+    sessionStorage.removeItem('aff_utm_medium')
+    sessionStorage.removeItem('aff_utm_campaign')
+    sessionStorage.removeItem('aff_sidc')
+
+    axios.post('/api/auth/callback', {
+      code,
+      code_verifier: codeVerifier,
+      ...(utmSource   && { utm_source: utmSource }),
+      ...(utmMedium   && { utm_medium: utmMedium }),
+      ...(utmCampaign && { utm_campaign: utmCampaign }),
+      ...(sidc        && { sidc }),
+    })
       .then(({ data }) => {
         setAuth(data.user, data.access_token)
         navigate('/dashboard', { replace: true })
