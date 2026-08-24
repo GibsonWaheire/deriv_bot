@@ -140,7 +140,7 @@ export default function Auto() {
   // Config form state
   const [symbols, setSymbols]       = useState(['R_10', 'R_50', 'R_100', '1HZ10V', '1HZ100V'])
   const [stake, setStake]           = useState(10)
-  const [minGrade, setMinGrade]     = useState<'A' | 'AB'>('A')
+  const [minGrade, setMinGrade]     = useState<'A' | 'AB'>('AB')
   const [maxTrades, setMaxTrades]   = useState(20)
   const [maxLoss, setMaxLoss]       = useState(20)
   const [strategy, setStrategy]     = useState<'flat' | 'martingale'>('flat')

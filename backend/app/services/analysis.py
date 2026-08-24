@@ -17,7 +17,7 @@ MIN_EVEN_ODD_EDGE        = 0.05  # minimum deviation from 50% to signal EVEN/ODD
 MIN_DIGITMATCH_COMPOSITE = 0.40  # composite must exceed this for a precision signal
 MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
-MIN_OVER_UNDER_EDGE      = 0.07  # minimum observed deviation from theoretical to fire
+MIN_OVER_UNDER_EDGE      = 0.04  # minimum observed deviation from theoretical to fire
 SAFE_SIGNALS = [
     ("DIGITOVER",  2, 0.70),   # P(digit > 2) = 70%
     ("DIGITUNDER", 7, 0.70),   # P(digit < 7) = 70%
@@ -362,26 +362,23 @@ def extract_signals(
     row_samples = sum(1 for i in range(len(digits) - 1) if digits[i] == last)
 
     if best["composite"] >= MIN_DIGITMATCH_COMPOSITE and row_samples >= MIN_DIGITMATCH_ROW_SAMPLES:
-        # Confidence = blend of Markov probability + observed frequency.
-        # Base rate is 10% (1/10 digits) — we only show the genuine uplift above that.
-        markov_conf  = best["markov_prob"]                   # Markov predicted prob
-        freq_conf    = best["frequency"] + best["freq_deficit"]  # freq-adjusted
-        confidence   = round(min(0.5 * markov_conf + 0.5 * freq_conf, 0.35), 4)
-        # Boost slightly for very high composite (all factors aligned)
-        if best["composite"] >= 0.55:
-            confidence = round(min(confidence + 0.05, 0.40), 4)
-        grade = _grade(confidence) if confidence >= 0.65 else None  # must be Grade A
-        # Only emit if genuinely above random (>15%)
-        if confidence >= 0.15:
-            d = best["digit"]
-            signals.append(Signal(
-                symbol=symbol, name=name,
-                strategy="digit_match", contract_type="DIGITMATCH",
-                barrier=str(d), duration=duration,
-                confidence=round(confidence, 4),
-                edge=round(confidence - 0.10, 4),  # edge vs 10% base rate
-                grade=grade or "B",
-                tier="precision",
+        # Grade based on composite strength (not confidence, which reflects ~10% base rate).
+        # composite ≥ 0.55 → all three factors strongly aligned → Grade A
+        # composite 0.40-0.55 → solid signal but weaker alignment → Grade B
+        grade = "A" if best["composite"] >= 0.55 else "B"
+        # Confidence = honest Markov+frequency blend, capped at 0.35
+        markov_conf = best["markov_prob"]
+        freq_conf   = best["frequency"] + best["freq_deficit"]
+        confidence  = round(min(0.5 * markov_conf + 0.5 * freq_conf, 0.35), 4)
+        d = best["digit"]
+        signals.append(Signal(
+            symbol=symbol, name=name,
+            strategy="digit_match", contract_type="DIGITMATCH",
+            barrier=str(d), duration=duration,
+            confidence=round(confidence, 4),
+            edge=round(confidence - 0.10, 4),  # edge vs 10% base rate
+            grade=grade,
+            tier="precision",
                 meta={
                     "digit": d,
                     "markov_prob": best["markov_prob"],
