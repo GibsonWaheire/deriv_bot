@@ -18,6 +18,7 @@ MIN_DIGITMATCH_COMPOSITE = 0.40  # composite must exceed this for a precision si
 MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
 MIN_OVER_UNDER_EDGE      = 0.04  # minimum observed deviation from theoretical to fire
+ROLLING_WINDOW           = 100   # ticks used for EVEN/ODD and OVER/UNDER (short = catches local momentum)
 SAFE_SIGNALS = [
     ("DIGITOVER",  2, 0.70),   # P(digit > 2) = 70%
     ("DIGITUNDER", 7, 0.70),   # P(digit < 7) = 70%
@@ -282,7 +283,8 @@ def extract_signals(
 
     regime = detect_volatility_regime(prices if prices else [float(d) for d in digits])
     duration = recommend_duration(regime)
-    matrix = build_transition_matrix(digits)
+    matrix = build_transition_matrix(digits)   # full history → reliable Markov matrix
+    recent = digits[-ROLLING_WINDOW:]          # short window → catches local momentum
     name = _symbol_name(symbol)
     signals: list[Signal] = []
 
@@ -302,11 +304,10 @@ def extract_signals(
         ))
 
     # ── TIER: medium ──────────────────────────────────────────────────────────
-    # Dynamic OVER/UNDER — mid-range barriers (3-6), only when observed edge ≥7%
-    # These pay 60-130% payout vs tiny payout for OVER 2 / UNDER 7.
-    ou = score_over_under(digits, thresholds=MID_BARRIERS)
+    # Dynamic OVER/UNDER — uses last 100 ticks so local momentum shows up.
+    # Full 1000-tick window smooths out to near-theoretical, masking real deviations.
+    ou = score_over_under(recent, thresholds=MID_BARRIERS)
     if ou:
-        # observed win rate as confidence (already includes the edge)
         ou_conf = min(ou["observed"], 0.90)
         ou_grade = _grade(ou_conf)
         if ou_grade:
@@ -318,7 +319,7 @@ def extract_signals(
                 edge=round(ou["edge"], 4),
                 grade=ou_grade,
                 tier="medium",
-                meta=ou,
+                meta={**ou, "window": ROLLING_WINDOW},
             ))
 
     # DIGITDIFF — bet the least-Markov-likely digit won't appear (~90-93% win)
@@ -334,8 +335,9 @@ def extract_signals(
         meta=dd,
     ))
 
-    # DIGITEVEN / DIGITODD — only when meaningful deviation from 50%
-    eo = score_even_odd(digits)
+    # DIGITEVEN / DIGITODD — uses last 100 ticks for same reason as OVER/UNDER.
+    # 1000-tick even/odd rate is always ~50%; local streaks only visible in short window.
+    eo = score_even_odd(recent)
     if eo["edge"] >= MIN_EVEN_ODD_EDGE:
         confidence = min(0.50 + eo["edge"], 0.92)
         grade = _grade(confidence)
@@ -349,7 +351,7 @@ def extract_signals(
                 edge=round(eo["edge"], 4),
                 grade=grade,
                 tier="medium",
-                meta={"side": eo["side"], "observed": eo["observed"], "streak": eo["streak"]},
+                meta={"side": eo["side"], "observed": eo["observed"], "streak": eo["streak"], "window": ROLLING_WINDOW},
             ))
 
     # ── TIER: precision ───────────────────────────────────────────────────────
