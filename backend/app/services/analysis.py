@@ -19,6 +19,7 @@ MIN_DIGITMATCH_COMPOSITE = 0.40  # composite must exceed this for a precision si
 MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
 MIN_OVER_UNDER_EDGE      = 0.04  # minimum observed deviation from theoretical to fire
+MIN_DIGITDIFF_MARKOV     = 0.05  # chosen digit's Markov prob must be ≤ this (genuine bias away from it)
 ROLLING_WINDOW           = 100   # ticks used for EVEN/ODD and OVER/UNDER (short = catches local momentum)
 # Safe barriers — only traded when rolling-window observed rate beats theoretical
 SAFE_BARRIERS = [
@@ -332,18 +333,20 @@ def extract_signals(
                 meta={**ou, "window": ROLLING_WINDOW},
             ))
 
-    # DIGITDIFF — bet the least-Markov-likely digit won't appear (~90-93% win)
+    # DIGITDIFF — only when Markov matrix is genuinely skewed away from chosen digit.
+    # Flat row (~10% each) = no real edge; need ≤5% to confirm the matrix is biased.
     dd = score_digit_differs(digits, matrix)
-    signals.append(Signal(
-        symbol=symbol, name=name,
-        strategy="digit_diff", contract_type="DIGITDIFF",
-        barrier=str(dd["digit"]), duration=duration,
-        confidence=dd["win_probability"],
-        edge=round(dd["win_probability"] - 0.5, 4),
-        grade="A",
-        tier="medium",
-        meta=dd,
-    ))
+    if dd["markov_prob"] <= MIN_DIGITDIFF_MARKOV:
+        signals.append(Signal(
+            symbol=symbol, name=name,
+            strategy="digit_diff", contract_type="DIGITDIFF",
+            barrier=str(dd["digit"]), duration=duration,
+            confidence=dd["win_probability"],
+            edge=round(dd["win_probability"] - 0.5, 4),
+            grade="A",
+            tier="medium",
+            meta=dd,
+        ))
 
     # DIGITEVEN / DIGITODD — uses last 100 ticks for same reason as OVER/UNDER.
     # 1000-tick even/odd rate is always ~50%; local streaks only visible in short window.
