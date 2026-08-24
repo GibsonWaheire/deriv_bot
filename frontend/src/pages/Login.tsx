@@ -40,7 +40,7 @@ export default function Login() {
   }
 
   function devLogin() {
-    setAuth({ deriv_account_id: 'DEV_ACCOUNT', email: 'dev@local', currency: 'USD', country: 'KE', balance: 10000, account_type: 'demo' }, 'dev-token')
+    setAuth({ deriv_account_id: 'GUEST', email: '', currency: 'USD', country: '' }, 'dev-token')
     navigate('/dashboard', { replace: true })
   }
 

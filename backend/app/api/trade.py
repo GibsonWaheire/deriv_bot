@@ -27,7 +27,7 @@ _trading_ws: dict[str, DerivWS] = {}
 
 
 async def _get_ws(account_id: str) -> DerivWS:
-    """Return a live trading WS for this account, opening one if needed."""
+    """Return a live trading WS for this account (OTP-based)."""
     ws = _trading_ws.get(account_id)
     if ws and ws.connected:
         return ws
@@ -36,7 +36,7 @@ async def _get_ws(account_id: str) -> DerivWS:
     if not cached:
         raise HTTPException(
             status_code=401,
-            detail="Trading session expired — please log in again",
+            detail="No trading session — log in with a Deriv API token or via OAuth",
         )
     data = json.loads(cached)
     ws = await connect_trading_ws(data["ws_url"])

@@ -38,15 +38,15 @@ export function useSignals() {
   const alive = useRef(true)
 
   const connect = useCallback(() => {
-    if (!token) return
     if (wsRef.current?.readyState === WebSocket.CONNECTING) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     setState(s => ({ ...s, status: 'connecting', errorMsg: null }))
 
+    const wsToken = token || 'dev-token'
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(
-      `${proto}//${window.location.host}/ws/signals?token=${encodeURIComponent(token)}`
+      `${proto}//${window.location.host}/ws/signals?token=${encodeURIComponent(wsToken)}`
     )
     wsRef.current = ws
 
@@ -74,6 +74,23 @@ export function useSignals() {
             }
             // Recalculate top signal across all symbols
             const all: Signal[] = Object.values(updated).flatMap(ss => ss.signals)
+            all.sort((a, b) => b.confidence - a.confidence)
+            return { ...s, snapshots: updated, topSignal: all[0] ?? null }
+          })
+        } else if (msg.type === 'digit_tick') {
+          // Per-tick refresh for Markov-sensitive signals (DIGITMATCH, DIGITDIFF)
+          setState(s => {
+            const sym = msg.symbol
+            const existing = s.snapshots[sym]
+            if (!existing) return s
+            const targetCt = msg.contract_type  // which contract type to update
+            const updatedSignals = existing.signals.map((sig: any) =>
+              sig.contract_type === targetCt
+                ? { ...sig, barrier: msg.barrier, confidence: msg.confidence, edge: msg.edge, grade: msg.grade, tier: msg.tier, meta: msg.meta, fired_at: msg.fired_at }
+                : sig
+            ).sort((a: any, b: any) => b.confidence - a.confidence)
+            const updated = { ...s.snapshots, [sym]: { ...existing, signals: updatedSignals } }
+            const all = Object.values(updated).flatMap((ss: any) => ss.signals) as any[]
             all.sort((a, b) => b.confidence - a.confidence)
             return { ...s, snapshots: updated, topSignal: all[0] ?? null }
           })
@@ -114,7 +131,7 @@ export function useSignals() {
         if (alive.current) connect()
       }, 4000)
     }
-  }, [token])
+  }, [token]) // token used as fallback — reconnect if real login happens
 
   const disconnect = useCallback(() => {
     if (retryRef.current) clearTimeout(retryRef.current)

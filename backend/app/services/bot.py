@@ -1,19 +1,22 @@
 """
-Automation Bot — BotSession runs the full signal → trade loop autonomously.
+Automation Bot — three-tier rotating strategy.
 
-Flow:
-  1. Poll broadcaster cache every 2s for qualifying signals (Grade A or A+B)
-  2. On match: get proposal, check payout% ≥ threshold, schedule_entry → buy
-  3. Subscribe to open contract for settlement detection
-  4. Log WIN/LOSS, adjust martingale stake, check hard-stop conditions
+Tier cycle: safe → medium → safe → precision → (repeat)
+  safe      — DIGITOVER 2, DIGITUNDER 7 (~70% win rate, tiny payout)
+  medium    — DIGITDIFF, DIGITEVEN/ODD (~90% win rate, moderate payout)
+  precision — DIGITMATCH only (strict Markov composite, high payout required)
+
+After each loss: insert an extra 'safe' trade at front of queue.
 
 Hard stops (require explicit user resume):
   - Daily loss > max_daily_loss_pct of starting balance
-  - 3 consecutive losses
+  - N consecutive losses (when max_consecutive_losses > 0)
 """
 import asyncio
 import logging
+import random
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -26,10 +29,19 @@ from app.services.deriv_client import (
 
 logger = logging.getLogger(__name__)
 
-MIN_PAYOUT_PCT = 70.0        # minimum payout % before accepting a trade
-MAX_LOG_ENTRIES = 200        # cap in-memory log
-MAX_MARTINGALE_MULT = 4      # cap martingale at 4× base stake
-POLL_INTERVAL_S = 2.0        # seconds between signal checks
+# Minimum payout % per tier
+TIER_MIN_PAYOUT = {
+    "safe":      1.0,   # DIGITOVER/UNDER pay ~2-5%, accept anything positive
+    "medium":    8.0,   # DIGITDIFF/EVEN/ODD pay ~8-15%
+    "precision": 70.0,  # DIGITMATCH only worth it at high payout
+}
+
+# Default rotation cycle (repeats indefinitely)
+TIER_CYCLE = ["safe", "medium", "safe", "precision"]
+
+MAX_LOG_ENTRIES = 200
+MAX_MARTINGALE_MULT = 4
+POLL_INTERVAL_S = 2.0
 
 
 @dataclass
@@ -41,6 +53,7 @@ class BotConfig:
     max_daily_loss_pct: float = 20.0   # % of starting balance
     stake_strategy: Literal["flat", "martingale"] = "flat"
     starting_balance: float = 1000.0   # reference for daily loss limit
+    max_consecutive_losses: int = 0    # 0 = disabled
 
 
 @dataclass
@@ -73,8 +86,11 @@ class BotSession:
 
         # State
         self.current_watch: str = "Initialising…"
+        self.current_balance: float = config.starting_balance
         self._active_trade: dict | None = None
-        self._last_acted_fired_at: float = 0.0    # fired_at of last traded signal
+        self._last_acted_fired_at: dict[str, float] = {}  # "symbol:contract_type" → fired_at
+        self._tier_queue: deque[str] = deque(TIER_CYCLE * 3)
+        self._symbol_queue: deque[str] = self._build_symbol_queue()
         self._task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -114,6 +130,9 @@ class BotSession:
             ),
             "current_stake": round(self.current_stake, 2),
             "current_watch": self.current_watch,
+            "current_tier": self._current_tier(),
+            "current_symbol": self._current_symbol(),
+            "current_balance": round(self.current_balance, 2),
             "config": {
                 "symbols": self.config.symbols,
                 "stake": self.config.stake,
@@ -122,6 +141,7 @@ class BotSession:
                 "max_daily_loss_pct": self.config.max_daily_loss_pct,
                 "stake_strategy": self.config.stake_strategy,
                 "starting_balance": self.config.starting_balance,
+                "max_consecutive_losses": self.config.max_consecutive_losses,
             },
             "log": [
                 {"time": e.time, "event": e.event, "message": e.message, "details": e.details}
@@ -140,28 +160,91 @@ class BotSession:
             self.log = self.log[-MAX_LOG_ENTRIES:]
         logger.info(f"[Bot:{self.account_id}] {message}")
 
+    # ------------------------------------------------------------------
+    # Symbol rotation helpers
+    # ------------------------------------------------------------------
+
+    def _build_symbol_queue(self) -> deque[str]:
+        syms = list(self.config.symbols)
+        random.shuffle(syms)
+        return deque(syms)
+
+    def _current_symbol(self) -> str:
+        if not self._symbol_queue:
+            self._symbol_queue = self._build_symbol_queue()
+        return self._symbol_queue[0]
+
+    def _advance_symbol(self):
+        """Rotate to next symbol. Reshuffle when the full cycle completes."""
+        if self._symbol_queue:
+            done = self._symbol_queue.popleft()
+            self._symbol_queue.append(done)  # move to back
+        # Reshuffle when we've cycled through all symbols
+        if not self._symbol_queue:
+            self._symbol_queue = self._build_symbol_queue()
+
+    # ------------------------------------------------------------------
+    # Tier rotation helpers
+    # ------------------------------------------------------------------
+
+    def _current_tier(self) -> str:
+        if not self._tier_queue:
+            self._tier_queue.extend(TIER_CYCLE)
+        return self._tier_queue[0]
+
+    def _advance_tier(self, won: bool):
+        """Pop current tier. On loss insert an extra safe trade as buffer."""
+        if self._tier_queue:
+            self._tier_queue.popleft()
+        if not self._tier_queue:
+            self._tier_queue.extend(TIER_CYCLE)
+        if not won:
+            self._tier_queue.appendleft("safe")
+
+    # ------------------------------------------------------------------
+    # Signal selection
+    # ------------------------------------------------------------------
+
     def _find_signal(self) -> dict | None:
-        """Return the highest-confidence qualifying signal from broadcaster cache."""
-        # Import here to avoid circular import at module level
+        """
+        Find the best qualifying signal using symbol + tier rotation.
+        Priority:
+          1. Current symbol + current tier
+          2. Current symbol + any tier
+          3. Any configured symbol + current tier   (current symbol has no signals yet)
+          4. Any configured symbol + any tier       (final fallback)
+        """
         from app.core.ws_manager import broadcaster
 
         allowed = {"A"} if self.config.min_grade == "A" else {"A", "B"}
-        best: dict | None = None
-        best_conf = 0.0
+        target_sym  = self._current_symbol()
+        target_tier = self._current_tier()
 
-        for symbol in self.config.symbols:
-            for sig in broadcaster._last_signals.get(symbol, []):
-                if sig.get("grade") not in allowed:
-                    continue
-                # Skip signals we've already acted on (same snapshot)
-                if sig.get("fired_at", 0) <= self._last_acted_fired_at:
-                    continue
-                conf = sig.get("confidence", 0.0)
-                if conf > best_conf:
-                    best_conf = conf
-                    best = sig
+        def _scan(symbols: list[str], tier_filter: str | None) -> dict | None:
+            best: dict | None = None
+            best_conf = 0.0
+            for sym in symbols:
+                for sig in broadcaster._last_signals.get(sym, []):
+                    if tier_filter and sig.get("tier") != tier_filter:
+                        continue
+                    if sig.get("grade") not in allowed:
+                        continue
+                    ct  = sig.get("contract_type", "")
+                    key = f"{sym}:{ct}"
+                    if sig.get("fired_at", 0) <= self._last_acted_fired_at.get(key, 0.0):
+                        continue
+                    conf = sig.get("confidence", 0.0)
+                    if conf > best_conf:
+                        best_conf = conf
+                        best = sig
+            return best
 
-        return best
+        return (
+            _scan([target_sym], target_tier) or
+            _scan([target_sym], None) or
+            _scan(self.config.symbols, target_tier) or
+            _scan(self.config.symbols, None)
+        )
 
     def _within_hourly_limit(self) -> bool:
         now = time.time()
@@ -193,9 +276,11 @@ class BotSession:
 
                 signal = self._find_signal()
                 if not signal:
-                    syms = ", ".join(self.config.symbols)
                     grade_label = "Grade A" if self.config.min_grade == "A" else "Grade A or B"
-                    self.current_watch = f"Watching {syms} · waiting for {grade_label} signal…"
+                    self.current_watch = (
+                        f"[{self._current_tier()}] {self._current_symbol()} · "
+                        f"waiting for {grade_label} signal…"
+                    )
                     await asyncio.sleep(POLL_INTERVAL_S)
                     continue
 
@@ -228,19 +313,23 @@ class BotSession:
             "grade": grade,
         })
 
-        # Mark as acted so we don't re-enter this snapshot
-        self._last_acted_fired_at = fired_at
+        # Mark as acted per symbol+contract_type so other symbols stay unblocked
+        self._last_acted_fired_at[f"{symbol}:{ct}"] = fired_at
+        self._advance_symbol()   # rotate to next instrument
 
-        # Get proposal
         try:
             proposal = await get_proposal(symbol, ct, barrier, duration, self.current_stake, self.ws)
         except Exception as e:
             self._log("error", f"Proposal failed: {e}")
             return
 
-        # Check payout threshold
-        if proposal["payout_pct"] < MIN_PAYOUT_PCT:
-            self._log("skip", f"Payout {proposal['payout_pct']:.1f}% < {MIN_PAYOUT_PCT:.0f}% threshold — skipping")
+        # Check tier-appropriate payout threshold
+        tier = signal.get("tier", "precision")
+        min_payout = TIER_MIN_PAYOUT.get(tier, TIER_MIN_PAYOUT["precision"])
+        if proposal["payout_pct"] < min_payout:
+            self._log("skip", f"Payout {proposal['payout_pct']:.1f}% < {min_payout:.0f}% ({tier}) — skipping")
+            self._advance_tier(True)
+            self._advance_symbol()
             return
 
         # Execute buy
@@ -254,6 +343,8 @@ class BotSession:
         contract_id = result["contract_id"]
         buy_price = result["buy_price"]
         payout = result["payout"]
+        if result.get("balance_after"):
+            self.current_balance = float(result["balance_after"])
 
         self.trades_total += 1
         self._trades_this_hour.append(time.time())
@@ -272,26 +363,37 @@ class BotSession:
         asyncio.create_task(self._monitor(contract_id, buy_price))
 
     async def _monitor(self, contract_id: int, buy_price: float):
-        """Subscribe to contract updates and wait for WIN/LOSS settlement."""
+        """Wait for contract WIN/LOSS via topic listener + direct subscription."""
         settled = asyncio.Event()
         outcome: dict = {}
 
         async def on_update(msg: dict):
             poc = msg.get("proposal_open_contract", {})
+            # Filter: only handle our contract
+            if poc.get("contract_id") and int(poc["contract_id"]) != contract_id:
+                return
             if poc.get("is_sold") or poc.get("status") in ("won", "lost"):
                 outcome["profit"] = float(poc.get("profit", 0))
                 outcome["status"] = poc.get("status", "unknown")
                 settled.set()
 
+        # Register topic listener — catches ALL proposal_open_contract pushes
+        self.ws.on("proposal_open_contract", on_update)
+        # Also subscribe directly for this contract (belt-and-suspenders)
         sub_id = ""
         try:
             sub_id = await subscribe_open_contract(contract_id, on_update, self.ws)
+        except Exception:
+            pass  # topic listener will still catch it
+
+        try:
             await asyncio.wait_for(settled.wait(), timeout=120)
         except asyncio.TimeoutError:
             self._log("error", f"Contract #{contract_id} settlement timed out")
             self._active_trade = None
             return
         finally:
+            self.ws.off("proposal_open_contract", on_update)
             if sub_id:
                 try:
                     await self.ws.forget(sub_id)
@@ -321,6 +423,7 @@ class BotSession:
                 )
 
         self._active_trade = None
+        self._advance_tier(won)
 
         # Hard-stop checks
         loss_limit = self.config.starting_balance * self.config.max_daily_loss_pct / 100
@@ -328,6 +431,8 @@ class BotSession:
             self.status = "paused"
             self._log("paused",
                 f"Daily loss limit reached (${self.daily_loss:.2f} of ${loss_limit:.2f}) — manual resume required")
-        elif self.consecutive_losses >= 3:
+        elif (self.config.max_consecutive_losses > 0
+              and self.consecutive_losses >= self.config.max_consecutive_losses):
             self.status = "paused"
-            self._log("paused", "3 consecutive losses — manual resume required")
+            self._log("paused",
+                f"{self.consecutive_losses} consecutive losses — manual resume required")

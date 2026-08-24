@@ -2,12 +2,7 @@
 
 # Start both servers (requires two terminals or tmux — use 'make dev' with a process manager)
 dev:
-	@echo "Starting docker services..."
-	docker compose up -d
-	@echo "Starting backend on :8000 and frontend on :5173"
-	@echo "Run in separate terminals:"
-	@echo "  make dev-backend"
-	@echo "  make dev-frontend"
+	@bash dev.sh
 
 dev-frontend:
 	cd frontend && npm run dev

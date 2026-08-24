@@ -8,12 +8,13 @@ import asyncio
 import json
 import logging
 import time
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.services.analysis import Signal, extract_signals
+from app.services.analysis import Signal, extract_signals, build_transition_matrix, score_digit_match, score_digit_differs, _grade
 from app.services.timing import estimate_tick_interval, timing_info
 from app.services.ai_explainer import explain_signal
 from app.services.deriv_client import DerivWS, fetch_tick_history, measure_rtt
@@ -26,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
-TRACKED_SYMBOLS = ["1HZ100V", "1HZ10V", "R_100", "R_50"]
+TRACKED_SYMBOLS = [
+    "R_10", "R_25", "R_50", "R_75", "R_100",
+    "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V",
+    "JD10", "JD25", "JD50", "JD75", "JD100",
+]
 HISTORY_COUNT = 1000       # new Deriv API caps at 1000 ticks
 HEARTBEAT_INTERVAL = 15    # seconds
 ANALYSIS_EVERY_N_TICKS = 50  # re-run analysis every N live ticks per symbol
@@ -43,6 +48,7 @@ def _signal_dict(s: Signal) -> dict:
         "confidence": s.confidence,
         "edge": s.edge,
         "grade": s.grade,
+        "tier": s.tier,
         "explanation": s.explanation,
         "meta": s.meta,
         "fired_at": time.time(),
@@ -62,11 +68,12 @@ class SignalBroadcaster:
 
     def __init__(self):
         self._clients: set[WebSocket] = set()
-        self._digits: dict[str, list[int]] = {s: [] for s in TRACKED_SYMBOLS}
-        self._tick_times: dict[str, list[float]] = {s: [] for s in TRACKED_SYMBOLS}
+        self._digits: dict[str, list[int]] = defaultdict(list)
+        self._tick_times: dict[str, list[float]] = defaultdict(list)
         self._pip_sizes: dict[str, int] = {}
-        self._tick_counts: dict[str, int] = {s: 0 for s in TRACKED_SYMBOLS}
-        self._last_signals: dict[str, list] = {}   # cached signals per symbol
+        self._tick_counts: dict[str, int] = defaultdict(int)
+        self._last_signals: dict[str, list] = {}
+        self._matrices: dict[str, list[list[float]]] = {}
         self._rtt_ms: float = 50.0
         self._started = False
 
@@ -86,19 +93,18 @@ class SignalBroadcaster:
                 self._rtt_ms = await measure_rtt(ws)
                 logger.info(f"Deriv RTT: {self._rtt_ms:.1f}ms")
 
-                for symbol in TRACKED_SYMBOLS:
+                # Load all symbol histories in parallel
+                async def _load_history(symbol: str):
                     try:
                         hist = await fetch_tick_history(symbol, HISTORY_COUNT, ws)
                         pip = self._pip_sizes.get(symbol, 2)
-                        self._digits[symbol] = [
-                            _last_digit(p, pip) for p in hist["prices"]
-                        ]
+                        self._digits[symbol] = [_last_digit(p, pip) for p in hist["prices"]]
                         self._tick_times[symbol] = list(hist["times"])
-                        logger.info(
-                            f"Loaded {len(self._digits[symbol])} ticks for {symbol}"
-                        )
+                        logger.info(f"Loaded {len(self._digits[symbol])} ticks for {symbol}")
                     except Exception as e:
-                        logger.warning(f"History load failed for {symbol}: {e}")
+                        logger.warning(f"History load skipped for {symbol}: {e}")
+
+                await asyncio.gather(*[_load_history(s) for s in TRACKED_SYMBOLS])
 
                 for symbol in TRACKED_SYMBOLS:
                     await ws.subscribe(
@@ -140,17 +146,19 @@ class SignalBroadcaster:
             t_info = timing_info(epoch, self._rtt_ms, interval_ms)
             await self._broadcast({"type": "timing", "symbol": symbol, **t_info})
 
-            # Re-run analysis only every N ticks (stable predictions, not jitter)
             n = self._tick_counts[symbol]
-            is_first = n == 1   # run immediately after history loads
+            is_first = n == 1
             is_refresh = n % ANALYSIS_EVERY_N_TICKS == 0
 
+            # Full analysis every 50 ticks — rebuilds matrix + all signals
             if is_first or is_refresh:
                 digits = self._digits[symbol]
                 prices = [float(d) for d in digits]
                 signals = extract_signals(symbol, digits, prices)
 
-                # Enrich top signal with AI explanation
+                # Cache the Markov matrix for per-tick updates
+                self._matrices[symbol] = build_transition_matrix(digits)
+
                 if signals:
                     top_dict = _signal_dict(signals[0])
                     top_dict["explanation"] = await explain_signal(top_dict)
@@ -166,6 +174,55 @@ class SignalBroadcaster:
                     "signals": all_dicts,
                     "tick_count": n,
                     "refreshes_in": ANALYSIS_EVERY_N_TICKS - (n % ANALYSIS_EVERY_N_TICKS),
+                })
+
+            # Per-tick refresh for Markov-sensitive signals (DIGITMATCH + DIGITDIFF)
+            elif symbol in self._matrices and self._digits[symbol]:
+                from app.services.analysis import MIN_DIGITMATCH_COMPOSITE
+                digits = self._digits[symbol]
+                matrix = self._matrices[symbol]
+                fired = time.time()
+
+                # DIGITMATCH refresh
+                scores = score_digit_match(digits, matrix)
+                best = scores[0]
+                if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
+                    confidence = min(0.50 + best["composite"] * 1.5, 0.95)
+                    grade = _grade(confidence)
+                    if grade:
+                        await self._broadcast({
+                            "type": "digit_tick",
+                            "contract_type": "DIGITMATCH",
+                            "symbol": symbol,
+                            "tier": "precision",
+                            "barrier": str(best["digit"]),
+                            "confidence": round(confidence, 4),
+                            "edge": round(confidence - 0.5, 4),
+                            "grade": grade,
+                            "meta": {
+                                "digit": best["digit"],
+                                "markov_prob": best["markov_prob"],
+                                "frequency": best["frequency"],
+                                "freq_deficit": best["freq_deficit"],
+                                "gap_score": best["gap_score"],
+                                "last_digit": digits[-1],
+                            },
+                            "fired_at": fired,
+                        })
+
+                # DIGITDIFF refresh
+                dd = score_digit_differs(digits, matrix)
+                await self._broadcast({
+                    "type": "digit_tick",
+                    "contract_type": "DIGITDIFF",
+                    "symbol": symbol,
+                    "tier": "medium",
+                    "barrier": str(dd["digit"]),
+                    "confidence": dd["win_probability"],
+                    "edge": round(dd["win_probability"] - 0.5, 4),
+                    "grade": "A",
+                    "meta": dd,
+                    "fired_at": fired,
                 })
 
         return on_tick
@@ -216,8 +273,8 @@ async def ws_signals_endpoint(websocket: WebSocket):
     from app.core.config import settings
     token = websocket.query_params.get("token", "")
 
-    # Dev bypass — allowed when no OAuth client is configured
-    is_dev_token = token == "dev-token" and not settings.deriv_client_id
+    # Dev bypass — always allowed for guest/local access
+    is_dev_token = token == "dev-token"
     if not is_dev_token:
         user = decode_jwt(token)
         if not user:

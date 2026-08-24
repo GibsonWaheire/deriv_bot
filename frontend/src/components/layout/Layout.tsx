@@ -11,7 +11,6 @@ export default function Layout() {
   const [status, setStatus] = useState<ConnectionStatus>('offline')
   const [rtt, setRtt] = useState<number | null>(null)
   const [balance, setBalance] = useState<number | null>(null)
-  const [tradeCount] = useState(0)
 
   function handleConnect() {
     window.dispatchEvent(
@@ -43,7 +42,6 @@ export default function Layout() {
         rtt={rtt}
         balance={balance}
         status={status}
-        tradeCount={tradeCount}
       />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar

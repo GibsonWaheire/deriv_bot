@@ -1,35 +1,39 @@
 """
-Analysis engine — signal extraction based on statistical EDGE, not raw probability.
+Analysis engine — three-tier signal extraction.
 
-Key principle: confidence reflects deviation from the theoretical baseline.
-- DIGITMATCH base = 10%  → signal only when Markov + gap + deficit shows true excess
-- EVEN/ODD base = 50%   → signal only when observed rate OR streak reversal creates edge
-- RISE/FALL             → signal only on streak reversal (direction alone is noise)
-- OVER/UNDER            → signal only when observed rate exceeds theoretical by ≥ 10 pp
-  e.g. OVER 2 theoretical = 70%, so we need observed > 80% to signal
-  This eliminates "always high" artefacts like UNDER 8 (80% theoretical).
+Tier "safe"      — DIGITOVER 2, DIGITUNDER 7: ~70% win rate, always broadcast.
+Tier "medium"    — DIGITDIFF, DIGITEVEN/ODD: ~88-92% win rate, signal-based.
+Tier "precision" — DIGITMATCH only: strict Markov composite, high payout needed.
+
+Note: RISE/FALL removed — synthetic indices are random by design; streak
+reversal on a random process is noise with no predictive value.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
 
-MIN_OVER_UNDER_EDGE = 0.07  # minimum deviation from theoretical to signal OVER/UNDER
-MIN_EVEN_ODD_EDGE  = 0.03  # minimum deviation from 50% to signal EVEN/ODD
-MIN_STREAK_REVERSAL = 4    # streak length to trigger reversal signal
+MIN_EVEN_ODD_EDGE        = 0.05  # minimum deviation from 50% to signal EVEN/ODD
+MIN_DIGITMATCH_COMPOSITE = 0.22  # composite must exceed this for a precision signal
+MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
+SAFE_SIGNALS = [
+    ("DIGITOVER",  2, 0.70),   # P(digit > 2) = 70%
+    ("DIGITUNDER", 7, 0.70),   # P(digit < 7) = 70%
+]
 
 
 @dataclass
 class Signal:
     symbol: str
     name: str
-    strategy: str            # digit_match | even_odd | rise_fall | over_under
-    contract_type: str       # DIGITMATCH | DIGITEVEN | CALL | DIGITOVER …
+    strategy: str            # digit_match | digit_diff | even_odd | safe
+    contract_type: str       # DIGITMATCH | DIGITDIFF | DIGITEVEN | DIGITOVER …
     barrier: str             # digit string, or ""
     duration: int            # ticks
-    confidence: float        # 0–1 (deviation-based, not raw probability)
+    confidence: float        # 0–1
     edge: float              # confidence − 0.5
     grade: Literal["A", "B"]
+    tier: Literal["safe", "medium", "precision"] = "medium"
     explanation: str = ""
     meta: dict = field(default_factory=dict)
 
@@ -144,26 +148,20 @@ def score_even_odd(digits: list[int]) -> dict:
     }
 
 
-def score_rise_fall(prices: list[float]) -> dict | None:
+def score_digit_differs(digits: list[int], matrix: list[list[float]]) -> dict:
     """
-    Only signals on streak reversal (raw direction is noise).
-    Returns None when no actionable reversal is detected.
+    Pick the digit with the LOWEST Markov-predicted probability.
+    DIGITDIFF on that digit wins when any other digit appears (~90-95% win rate).
+    Win probability capped at 0.95 to avoid overconfidence on sparse data.
     """
-    if len(prices) < 10:
-        return None
-    diffs = [prices[i + 1] - prices[i] for i in range(len(prices) - 1)]
-    streak = _streak_length(diffs, lambda d: 1 if d > 0 else 0)
-    if streak < MIN_STREAK_REVERSAL:
-        return None
-
-    # Predict reversal of current direction
-    current_up = diffs[-1] > 0
-    direction = "fall" if current_up else "rise"
-    edge = min((streak - MIN_STREAK_REVERSAL) * 0.025, 0.30)
+    last = digits[-1] if digits else 0
+    row = matrix[last]
+    min_digit = min(range(10), key=lambda d: row[d])
+    win_prob = min(round(1.0 - row[min_digit], 4), 0.95)
     return {
-        "direction": direction,
-        "streak": streak,
-        "edge": round(edge, 4),
+        "digit": min_digit,
+        "markov_prob": round(row[min_digit], 4),
+        "win_probability": win_prob,
     }
 
 
@@ -250,16 +248,21 @@ def _grade(confidence: float) -> str | None:
 
 def _symbol_name(symbol: str) -> str:
     return {
-        "1HZ100V": "Volatility 100 (1s)",
         "1HZ10V":  "Volatility 10 (1s)",
         "1HZ25V":  "Volatility 25 (1s)",
         "1HZ50V":  "Volatility 50 (1s)",
         "1HZ75V":  "Volatility 75 (1s)",
-        "R_100":   "Volatility 100",
+        "1HZ100V": "Volatility 100 (1s)",
         "R_10":    "Volatility 10",
         "R_25":    "Volatility 25",
         "R_50":    "Volatility 50",
         "R_75":    "Volatility 75",
+        "R_100":   "Volatility 100",
+        "JD10":    "Jump 10",
+        "JD25":    "Jump 25",
+        "JD50":    "Jump 50",
+        "JD75":    "Jump 75",
+        "JD100":   "Jump 100",
     }.get(symbol, symbol)
 
 
@@ -267,8 +270,8 @@ def extract_signals(
     symbol: str, digits: list[int], prices: list[float]
 ) -> list[Signal]:
     """
-    Run all strategies and return Grade A/B signals sorted by confidence desc.
-    All confidences are deviation-based — not raw win probability.
+    Three-tier signal extraction.
+    Returns signals sorted by tier priority then confidence.
     """
     if len(digits) < 20:
         return []
@@ -279,36 +282,39 @@ def extract_signals(
     name = _symbol_name(symbol)
     signals: list[Signal] = []
 
-    # --- DIGITMATCH ---
-    scores = score_digit_match(digits, matrix)
-    best = scores[0]
-    # composite ∈ [0, ~0.6]; map to confidence around [0.50, 0.95]
-    confidence = min(0.50 + best["composite"] * 1.5, 0.95)
-    grade = _grade(confidence)
-    if grade:
-        d = best["digit"]
+    # ── TIER: safe ────────────────────────────────────────────────────────────
+    # DIGITOVER 2 and DIGITUNDER 7 — always broadcast, no edge required.
+    # Confidence = base win rate so the UI can show it clearly.
+    for ct, barrier, base_rate in SAFE_SIGNALS:
         signals.append(Signal(
             symbol=symbol, name=name,
-            strategy="digit_match", contract_type="DIGITMATCH",
-            barrier=str(d), duration=duration,
-            confidence=round(confidence, 4),
-            edge=round(confidence - 0.5, 4),
-            grade=grade,
-            meta={
-                "digit": d,
-                "markov_prob": best["markov_prob"],
-                "frequency": best["frequency"],
-                "freq_deficit": best["freq_deficit"],
-                "gap_score": best["gap_score"],
-                "last_digit": digits[-1],
-                "regime": regime,
-            },
+            strategy="safe", contract_type=ct,
+            barrier=str(barrier), duration=1,  # 1-tick contracts
+            confidence=base_rate,
+            edge=round(base_rate - 0.5, 4),
+            grade="A",
+            tier="safe",
+            meta={"theoretical": base_rate, "barrier": barrier},
         ))
 
-    # --- EVEN / ODD ---
+    # ── TIER: medium ──────────────────────────────────────────────────────────
+    # DIGITDIFF — bet the least-Markov-likely digit won't appear (~90-93% win)
+    dd = score_digit_differs(digits, matrix)
+    signals.append(Signal(
+        symbol=symbol, name=name,
+        strategy="digit_diff", contract_type="DIGITDIFF",
+        barrier=str(dd["digit"]), duration=duration,
+        confidence=dd["win_probability"],
+        edge=round(dd["win_probability"] - 0.5, 4),
+        grade="A",
+        tier="medium",
+        meta=dd,
+    ))
+
+    # DIGITEVEN / DIGITODD — only when meaningful deviation from 50%
     eo = score_even_odd(digits)
     if eo["edge"] >= MIN_EVEN_ODD_EDGE:
-        confidence = min(0.50 + eo["edge"], 0.95)
+        confidence = min(0.50 + eo["edge"], 0.92)
         grade = _grade(confidence)
         if grade:
             ct = "DIGITEVEN" if eo["side"] == "even" else "DIGITODD"
@@ -319,53 +325,40 @@ def extract_signals(
                 confidence=round(confidence, 4),
                 edge=round(eo["edge"], 4),
                 grade=grade,
-                meta={
-                    "side": eo["side"],
-                    "observed": eo["observed"],
-                    "streak": eo["streak"],
-                },
+                tier="medium",
+                meta={"side": eo["side"], "observed": eo["observed"], "streak": eo["streak"]},
             ))
 
-    # --- RISE / FALL ---
-    rf_prices = prices[-200:] if len(prices) >= 200 else prices
-    rf = score_rise_fall(rf_prices)
-    if rf:
-        confidence = min(0.50 + rf["edge"], 0.95)
+    # ── TIER: precision ───────────────────────────────────────────────────────
+    # DIGITMATCH — strict composite threshold, Markov + gap + deficit all strong
+    scores = score_digit_match(digits, matrix)
+    best = scores[0]
+    if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
+        confidence = min(0.50 + best["composite"] * 1.5, 0.95)
         grade = _grade(confidence)
         if grade:
-            ct = "CALL" if rf["direction"] == "rise" else "PUT"
+            d = best["digit"]
             signals.append(Signal(
                 symbol=symbol, name=name,
-                strategy="rise_fall", contract_type=ct,
-                barrier="", duration=duration,
+                strategy="digit_match", contract_type="DIGITMATCH",
+                barrier=str(d), duration=duration,
                 confidence=round(confidence, 4),
-                edge=round(rf["edge"], 4),
+                edge=round(confidence - 0.5, 4),
                 grade=grade,
+                tier="precision",
                 meta={
-                    "direction": rf["direction"],
-                    "streak": rf["streak"],
+                    "digit": d,
+                    "markov_prob": best["markov_prob"],
+                    "frequency": best["frequency"],
+                    "freq_deficit": best["freq_deficit"],
+                    "gap_score": best["gap_score"],
+                    "composite": best["composite"],
+                    "last_digit": digits[-1],
+                    "regime": regime,
                 },
             ))
 
-    # --- OVER / UNDER ---
-    ou = score_over_under(digits)
-    if ou:
-        confidence = min(0.50 + ou["edge"], 0.95)
-        grade = _grade(confidence)
-        if grade:
-            signals.append(Signal(
-                symbol=symbol, name=name,
-                strategy="over_under", contract_type=ou["contract_type"],
-                barrier=str(ou["threshold"]), duration=duration,
-                confidence=round(confidence, 4),
-                edge=round(ou["edge"], 4),
-                grade=grade,
-                meta={
-                    "threshold": ou["threshold"],
-                    "observed": ou["observed"],
-                    "theoretical": ou["theoretical"],
-                },
-            ))
-
-    signals.sort(key=lambda s: s.confidence, reverse=True)
+    # Sort: safe first, then medium, then precision; within tier by confidence desc
+    tier_order = {"safe": 0, "medium": 1, "precision": 2}
+    signals.sort(key=lambda s: (tier_order[s.tier], -s.confidence))
     return signals

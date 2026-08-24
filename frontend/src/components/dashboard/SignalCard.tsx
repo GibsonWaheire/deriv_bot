@@ -15,16 +15,24 @@ const GRADE_COLOR = { A: 'text-brand-green', B: 'text-brand-yellow' }
 interface Props {
   rank: number
   signal: Signal
-  onTrade: (signal: Signal) => void
+  selected?: boolean
+  onSelect: () => void
 }
 
-export default function SignalCard({ rank, signal, onTrade }: Props) {
+export default function SignalCard({ rank, signal, selected, onSelect }: Props) {
   const badge = CONTRACT_BADGE[signal.contract_type] ?? { label: signal.contract_type, color: 'bg-surface-4 text-ink-muted border-border' }
   const gradeColor = GRADE_COLOR[signal.grade] ?? 'text-ink-muted'
   const targetStr = signal.barrier || (signal.contract_type === 'CALL' ? '↑' : signal.contract_type === 'PUT' ? '↓' : '~')
 
   return (
-    <div className="flex items-center gap-4 px-4 py-3 rounded-xl border border-border bg-surface-2 hover:bg-surface-3 transition-colors group">
+    <button
+      onClick={onSelect}
+      className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors text-left
+        ${selected
+          ? 'border-brand-blue bg-brand-blue/8'
+          : 'border-border bg-surface-2 hover:bg-surface-3 hover:border-border-2'
+        }`}
+    >
       {/* Rank */}
       <span className="text-xs font-mono text-ink-muted w-4 shrink-0">#{rank}</span>
 
@@ -48,14 +56,8 @@ export default function SignalCard({ rank, signal, onTrade }: Props) {
       {/* Duration */}
       <span className="text-[10px] text-ink-muted shrink-0">{signal.duration}t</span>
 
-      {/* Trade button (shows on hover) */}
-      <button
-        onClick={() => onTrade(signal)}
-        className="shrink-0 px-3 py-1 rounded-lg text-xs font-bold bg-brand-blue/10 text-brand-blue border border-brand-blue/20
-          opacity-0 group-hover:opacity-100 transition-opacity hover:bg-brand-blue/20"
-      >
-        Trade
-      </button>
-    </div>
+      {/* Selected indicator */}
+      {selected && <span className="text-[10px] text-brand-blue font-semibold shrink-0">Viewing ↑</span>}
+    </button>
   )
 }

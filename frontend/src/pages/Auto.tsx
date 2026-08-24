@@ -3,13 +3,110 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '@/store/authStore'
 import type { BotStatus, BotLogEntry } from '@/types'
 
+function TokenLoginPrompt({ onLoggedIn }: { onLoggedIn: (user: any, jwt: string) => void }) {
+  const [apiToken, setApiToken] = useState('')
+  const [accountType, setAccountType] = useState<'real' | 'demo'>('demo')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleConnect() {
+    if (!apiToken.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: apiToken.trim(), account_type: accountType }),
+      })
+      let data: any = null
+      try { data = await res.json() } catch { /* non-JSON body */ }
+      if (!res.ok) throw new Error(data?.detail ?? `Server error (${res.status}) — is the backend running?`)
+      onLoggedIn(data.user, data.access_token)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex-1 flex items-center justify-center p-8">
+      <div className="w-full max-w-sm space-y-5">
+        <div className="space-y-1">
+          <div className="text-sm font-semibold text-ink">Connect Deriv Account</div>
+          <div className="text-xs text-ink-muted">
+            Auto-trading requires a Deriv API token with <strong>Read + Trade</strong> scope.
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-surface-3 border border-border p-4 space-y-2 text-xs text-ink-muted">
+          <div className="font-semibold text-ink">How to get your token:</div>
+          <ol className="space-y-1 list-decimal list-inside">
+            <li>Go to <span className="text-brand-blue">home.deriv.com</span></li>
+            <li>My Account → API Token</li>
+            <li>Create token with Read + Trade scopes</li>
+            <li>Token format starts with <code className="text-ink bg-surface-4 px-1 rounded">pat_</code></li>
+          </ol>
+        </div>
+
+        {/* Account type toggle */}
+        <div className="flex rounded-lg border border-border overflow-hidden text-xs font-semibold">
+          {(['demo', 'real'] as const).map(type => (
+            <button
+              key={type}
+              onClick={() => setAccountType(type)}
+              className={`flex-1 py-2 capitalize transition-colors ${
+                accountType === type
+                  ? type === 'demo'
+                    ? 'bg-brand-blue text-surface'
+                    : 'bg-brand-green text-surface'
+                  : 'bg-surface-4 text-ink-muted hover:text-ink'
+              }`}
+            >
+              {type === 'demo' ? 'Demo Account' : 'Real Account'}
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={apiToken}
+            onChange={e => setApiToken(e.target.value)}
+            placeholder="pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            className="w-full px-3 py-2 rounded-lg border border-border bg-surface-4 text-ink text-xs font-mono focus:outline-none focus:border-brand-blue"
+          />
+          {error && <div className="text-xs text-brand-red">{error}</div>}
+          <button
+            onClick={handleConnect}
+            disabled={loading || !apiToken.trim()}
+            className="w-full py-2.5 rounded-lg bg-brand-blue text-surface text-sm font-semibold disabled:opacity-50 hover:bg-brand-blue/90 transition-colors"
+          >
+            {loading ? 'Connecting…' : 'Connect & Enable Auto-Trading'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const SYMBOLS = [
-  { value: '1HZ100V', label: 'Vol 100 (1s)' },
-  { value: '1HZ10V',  label: 'Vol 10 (1s)' },
-  { value: '1HZ50V',  label: 'Vol 50 (1s)' },
-  { value: 'R_100',   label: 'Volatility 100' },
-  { value: 'R_50',    label: 'Volatility 50' },
-  { value: 'R_10',    label: 'Volatility 10' },
+  { value: 'R_10',    label: 'Vol 10' },
+  { value: 'R_25',    label: 'Vol 25' },
+  { value: 'R_50',    label: 'Vol 50' },
+  { value: 'R_75',    label: 'Vol 75' },
+  { value: 'R_100',   label: 'Vol 100' },
+  { value: '1HZ10V',  label: '1s-10' },
+  { value: '1HZ25V',  label: '1s-25' },
+  { value: '1HZ50V',  label: '1s-50' },
+  { value: '1HZ75V',  label: '1s-75' },
+  { value: '1HZ100V', label: '1s-100' },
+  { value: 'JD10',    label: 'Jump 10' },
+  { value: 'JD25',    label: 'Jump 25' },
+  { value: 'JD50',    label: 'Jump 50' },
+  { value: 'JD75',    label: 'Jump 75' },
+  { value: 'JD100',   label: 'Jump 100' },
 ]
 
 const EVENT_COLORS: Record<string, string> = {
@@ -36,18 +133,19 @@ function fmtTime(epoch: number): string {
 }
 
 export default function Auto() {
-  const { token } = useAuthStore()
-  const isDev = token === 'dev-token'
+  const { token, setAuth } = useAuthStore()
+  const isDev = !token || token === 'dev-token'
   const qc = useQueryClient()
 
   // Config form state
-  const [symbols, setSymbols]       = useState(['1HZ100V', 'R_100'])
+  const [symbols, setSymbols]       = useState(['R_10', 'R_50', 'R_100', '1HZ10V', '1HZ100V'])
   const [stake, setStake]           = useState(10)
   const [minGrade, setMinGrade]     = useState<'A' | 'AB'>('A')
   const [maxTrades, setMaxTrades]   = useState(20)
   const [maxLoss, setMaxLoss]       = useState(20)
   const [strategy, setStrategy]     = useState<'flat' | 'martingale'>('flat')
   const [startBalance, setStartBalance] = useState(1000)
+  const [maxConsecLosses, setMaxConsecLosses] = useState(0)
 
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -65,6 +163,13 @@ export default function Auto() {
     enabled: !!token && !isDev,
   })
 
+  // Sync live balance to header
+  useEffect(() => {
+    if (bot?.current_balance != null) {
+      window.dispatchEvent(new CustomEvent('dst:balance', { detail: bot.current_balance }))
+    }
+  }, [bot?.current_balance])
+
   // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -74,18 +179,19 @@ export default function Auto() {
   const isPaused  = bot?.status === 'paused'
   const isActive  = isRunning || isPaused
 
-  function apiPost(path: string, body?: object) {
-    return fetch(`/api/bot${path}`, {
+  async function apiPost(path: string, body?: object) {
+    const r = await fetch(`/api/bot${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
       body: body ? JSON.stringify(body) : undefined,
-    }).then(r => {
-      if (!r.ok) return r.json().then(e => { throw new Error(e.detail ?? 'Request failed') })
-      return r.json()
     })
+    let data: any = null
+    try { data = await r.json() } catch { /* non-JSON body */ }
+    if (!r.ok) throw new Error(data?.detail ?? `Server error (${r.status}) — is the backend running?`)
+    return data
   }
 
   const startMut = useMutation({
@@ -97,6 +203,7 @@ export default function Auto() {
       max_daily_loss_pct: maxLoss,
       stake_strategy: strategy,
       starting_balance: startBalance,
+      max_consecutive_losses: maxConsecLosses,
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['bot-status'] }),
   })
@@ -114,11 +221,7 @@ export default function Auto() {
   }
 
   if (isDev) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-ink-muted text-sm">
-        Automation requires a real Deriv account login (dev-token bypasses auth).
-      </div>
-    )
+    return <TokenLoginPrompt onLoggedIn={(user, jwt) => { setAuth(user, jwt) }} />
   }
 
   const dailyLossPct = bot && bot.daily_loss_limit > 0
@@ -217,6 +320,22 @@ export default function Auto() {
               />
             </div>
 
+            {/* Consecutive loss limit */}
+            <div className="space-y-1">
+              <label className="text-xs text-ink-muted">Consecutive loss limit (0 = disabled)</label>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={maxConsecLosses}
+                onChange={e => setMaxConsecLosses(Number(e.target.value))}
+                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
+              />
+              {maxConsecLosses === 0 && (
+                <div className="text-[10px] text-ink-muted">Bot keeps trading regardless of losses</div>
+              )}
+            </div>
+
             {/* Starting balance */}
             <div className="space-y-1">
               <label className="text-xs text-ink-muted">Account balance ($) — for loss limit</label>
@@ -252,14 +371,28 @@ export default function Auto() {
           <div className="bg-surface-2 rounded-lg border border-border p-4 space-y-3">
             {/* Top row: status badge + controls */}
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-semibold ${
                   isRunning ? 'bg-brand-green/15 text-brand-green' :
                   isPaused  ? 'bg-brand-amber/15 text-brand-amber' :
                               'bg-surface-4 text-ink-muted'
                 }`}>
                   {bot.status.toUpperCase()}
                 </span>
+                {bot.current_tier && (
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                    bot.current_tier === 'safe'      ? 'bg-brand-green/10 text-brand-green' :
+                    bot.current_tier === 'medium'    ? 'bg-brand-blue/10 text-brand-blue' :
+                                                       'bg-brand-amber/10 text-brand-amber'
+                  }`}>
+                    {bot.current_tier}
+                  </span>
+                )}
+                {bot.current_symbol && (
+                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-4 text-ink-muted">
+                    {bot.current_symbol}
+                  </span>
+                )}
                 <span className="text-xs text-ink-muted truncate">{bot.current_watch}</span>
               </div>
 

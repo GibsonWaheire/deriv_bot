@@ -3,7 +3,6 @@ import { useAuthStore } from '@/store/authStore'
 interface TopbarProps {
   rtt?: number | null
   balance?: number | null
-  tradeCount?: number
   status?: 'offline' | 'connecting' | 'live' | 'error'
 }
 
@@ -21,7 +20,7 @@ const STATUS_LABEL: Record<string, string> = {
   offline:    'Offline',
 }
 
-export default function Topbar({ rtt, balance, tradeCount = 0, status = 'offline' }: TopbarProps) {
+export default function Topbar({ rtt, balance, status = 'offline' }: TopbarProps) {
   const { user, clearAuth, isLoggedIn } = useAuthStore()
 
   // Show balance from props (live) or from stored user (initial)
@@ -50,8 +49,6 @@ export default function Topbar({ rtt, balance, tradeCount = 0, status = 'offline
           value={displayBalance != null ? displayBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
           valueClass="text-brand-green font-semibold"
         />
-
-        <Pill label="Trades" value={String(tradeCount)} />
 
         {/* Status */}
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-4 border border-border text-xs">

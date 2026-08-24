@@ -18,6 +18,7 @@ from app.core.redis_client import get_redis
 logger = logging.getLogger(__name__)
 
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
+OLD_WS_URL    = "wss://ws.derivws.com/websockets/v3?app_id=1089"  # accepts a1-xxx tokens directly
 
 _req_id_counter = itertools.count(1)  # Deriv requires integer req_id
 DERIV_REST_BASE = "https://api.derivws.com"
@@ -137,6 +138,13 @@ class DerivWS:
     def on(self, msg_type: str, callback: Callable):
         """Register a listener for all messages of a given type."""
         self._topic_subs.setdefault(msg_type, []).append(callback)
+
+    def off(self, msg_type: str, callback: Callable):
+        """Remove a previously registered topic listener."""
+        try:
+            self._topic_subs.get(msg_type, []).remove(callback)
+        except ValueError:
+            pass
 
     async def forget(self, sub_id: str):
         await self.send({"forget": sub_id})
@@ -286,7 +294,7 @@ async def execute_buy(proposal_id: str, ask_price: float, ws: DerivWS) -> dict:
     Buy a contract.
     Returns: {contract_id, buy_price, payout, purchase_time, balance_after, transaction_id}
     """
-    msg = await ws.send({"buy": proposal_id, "price": ask_price, "subscribe": 1})
+    msg = await ws.send({"buy": proposal_id, "price": ask_price})
     if "error" in msg:
         raise ValueError(msg["error"]["message"])
     b = msg["buy"]
@@ -323,3 +331,65 @@ async def subscribe_balance(callback: Callable, ws: DerivWS) -> str:
 
 async def subscribe_transaction(callback: Callable, ws: DerivWS) -> str:
     return await ws.subscribe({"transaction": 1, "subscribe": 1}, callback)
+
+
+# ---------------------------------------------------------------------------
+# Direct token auth (old Deriv WS API — accepts a1-xxx tokens)
+# ---------------------------------------------------------------------------
+
+async def connect_with_token(token: str) -> tuple["DerivWS", dict]:
+    """
+    Connect to old Deriv WS and authorize with a personal API token (a1-xxx).
+    Returns (ws, account_info). Caller is responsible for keeping ws alive.
+    """
+    ws = DerivWS(OLD_WS_URL)
+    await ws.connect()
+    result = await ws.send({"authorize": token})
+    if "error" in result:
+        await ws.close()
+        raise ValueError(result["error"]["message"])
+    auth = result["authorize"]
+    info = {
+        "account_id": auth.get("loginid", ""),
+        "email": auth.get("email", ""),
+        "currency": auth.get("currency", "USD"),
+        "balance": float(auth.get("balance", 0)),
+        "account_type": "demo" if auth.get("is_virtual") else "real",
+    }
+    return ws, info
+
+
+async def get_proposal_v1(
+    symbol: str,
+    contract_type: str,
+    barrier: str,
+    duration: int,
+    stake: float,
+    ws: "DerivWS",
+) -> dict:
+    """Proposal using old Deriv API (uses 'symbol' not 'underlying_symbol')."""
+    payload: dict = {
+        "proposal": 1,
+        "amount": stake,
+        "basis": "stake",
+        "contract_type": contract_type,
+        "currency": "USD",
+        "duration": duration,
+        "duration_unit": "t",
+        "symbol": symbol,
+    }
+    if barrier:
+        payload["barrier"] = barrier
+    msg = await ws.send(payload)
+    if "error" in msg:
+        raise ValueError(msg["error"]["message"])
+    p = msg["proposal"]
+    ask = p["ask_price"]
+    payout = p["payout"]
+    return {
+        "proposal_id": p["id"],
+        "ask_price": ask,
+        "payout": payout,
+        "payout_pct": round((payout - ask) / ask * 100, 1) if ask else 0,
+        "longcode": p.get("longcode", ""),
+    }

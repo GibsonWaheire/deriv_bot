@@ -12,11 +12,15 @@ import app.models.affiliate  # noqa: F401 — register ORM models
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create DB tables if they don't exist (safe — skips existing tables)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Create DB tables — non-fatal if DB is unavailable
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"DB init skipped (non-fatal): {e}")
 
-    # Start the Deriv public WS broadcaster on startup
+    # Start the Deriv public WS broadcaster
     await broadcaster.start()
     yield
 

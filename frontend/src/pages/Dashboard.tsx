@@ -3,12 +3,14 @@ import type { Signal } from '@/types'
 import { useSignals } from '@/hooks/useSignals'
 import PredictionPanel from '@/components/dashboard/PredictionPanel'
 import SignalCard from '@/components/dashboard/SignalCard'
-import TradeModal from '@/components/dashboard/TradeModal'
 
 export default function Dashboard() {
   const { topSignal, snapshots, timing, status, rtt, connect, disconnect } = useSignals()
-  const [tradeSignal, setTradeSignal] = useState<Signal | null>(null)
   const [manuallyConnected, setManuallyConnected] = useState(false)
+  const [selectedSignal, setSelectedSignal] = useState<Signal | null>(null)
+
+  // Clear manual selection when a fresh snapshot arrives
+  useEffect(() => { setSelectedSignal(null) }, [topSignal?.fired_at])
 
   // Propagate status + rtt to Layout topbar via events
   useEffect(() => {
@@ -36,14 +38,14 @@ export default function Dashboard() {
     .flatMap(s => s.signals)
     .sort((a, b) => b.confidence - a.confidence)
 
-  const queueSignals = allSignals.slice(1)
+  // Active hero signal = manually selected or best overall
+  const heroSignal = selectedSignal ?? topSignal
+  const queueSignals = allSignals.filter(s => s !== heroSignal)
 
-  // The timing for the top signal's symbol
-  const topTiming = topSignal ? (timing[topSignal.symbol] ?? null) : null
-  const topTimingAt = topTiming ? (topTiming as any).receivedAt ?? 0 : 0
-
-  // Snapshot metadata for the top signal
-  const topSnap = topSignal ? snapshots[topSignal.symbol] : null
+  // Timing for the hero signal's symbol
+  const heroTiming = heroSignal ? (timing[heroSignal.symbol] ?? null) : null
+  const heroTimingAt = heroTiming ? (heroTiming as any).receivedAt ?? 0 : 0
+  const heroSnap = heroSignal ? snapshots[heroSignal.symbol] : null
 
   return (
     <div className="p-5 space-y-5 min-h-full">
@@ -97,26 +99,29 @@ export default function Dashboard() {
       )}
 
       {/* === HERO PREDICTION === */}
-      {topSignal && (
+      {heroSignal && (
         <div className="space-y-1.5">
-          {/* Snapshot freshness */}
-          {topSnap && (
+          {heroSnap && (
             <div className="flex items-center justify-between px-1 text-[10px] text-ink-muted">
               <span>
-                Best prediction across {Object.keys(snapshots).length} instrument{Object.keys(snapshots).length !== 1 ? 's' : ''}
+                {selectedSignal ? 'Selected signal' : `Best across ${Object.keys(snapshots).length} instrument${Object.keys(snapshots).length !== 1 ? 's' : ''}`}
+                {selectedSignal && (
+                  <button onClick={() => setSelectedSignal(null)} className="ml-2 text-brand-blue hover:underline">
+                    ← back to best
+                  </button>
+                )}
               </span>
               <span>
-                Analysis refreshes in{' '}
-                <span className="text-ink font-semibold">{topSnap.refreshesIn} ticks</span>
-                {' '}· {topSnap.tickCount} ticks analyzed
+                Refreshes in <span className="text-ink font-semibold">{heroSnap.refreshesIn} ticks</span>
+                {' '}· {heroSnap.tickCount} analyzed
               </span>
             </div>
           )}
           <PredictionPanel
-            signal={topSignal}
-            timing={topTiming}
-            timingAt={topTimingAt}
-            onTrade={setTradeSignal}
+            signal={heroSignal}
+            timing={heroTiming}
+            timingAt={heroTimingAt}
+            refreshesIn={heroSnap?.refreshesIn ?? 0}
           />
         </div>
       )}
@@ -138,7 +143,8 @@ export default function Dashboard() {
                 key={`${signal.symbol}-${signal.strategy}-${i}`}
                 rank={i + 2}
                 signal={signal}
-                onTrade={setTradeSignal}
+                selected={selectedSignal === signal}
+                onSelect={() => setSelectedSignal(signal)}
               />
             ))}
           </div>
@@ -156,14 +162,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Trade modal */}
-      {tradeSignal && (
-        <TradeModal
-          signal={tradeSignal}
-          timing={topTiming}
-          onClose={() => setTradeSignal(null)}
-        />
-      )}
     </div>
   )
 }

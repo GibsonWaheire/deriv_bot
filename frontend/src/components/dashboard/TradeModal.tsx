@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Signal, TimingInfo } from '@/types'
 import { useProposal } from '@/hooks/useProposal'
 import { useTradeExecution } from '@/hooks/useTradeExecution'
+import { useAuthStore } from '@/store/authStore'
 
 const STAKES = [1, 5, 10, 25]
 
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export default function TradeModal({ signal, timing, onClose }: Props) {
+  const { isLoggedIn } = useAuthStore()
   const [stake, setStake] = useState(10)
   const [customStake, setCustomStake] = useState('')
   const [useCustom, setUseCustom] = useState(false)
@@ -193,6 +195,11 @@ export default function TradeModal({ signal, timing, onClose }: Props) {
 
         {/* Action */}
         {!settled ? (
+          !isLoggedIn ? (
+            <div className="w-full py-3 rounded-xl text-sm font-semibold text-center text-ink-muted border border-border bg-surface-4">
+              Login with a Deriv account to trade
+            </div>
+          ) : (
           <button
             onClick={handleBuy}
             disabled={phase === 'pending' || !proposal}
@@ -207,6 +214,7 @@ export default function TradeModal({ signal, timing, onClose }: Props) {
               </span>
             ) : 'Place Trade'}
           </button>
+          )
         ) : (
           <button
             onClick={handleClose}

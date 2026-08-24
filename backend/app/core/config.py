@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     deriv_client_id: str = ""          # OAuth2 client_id from Deriv dashboard
     deriv_app_id: str = "1089"         # App ID (for WS legacy + Deriv-App-ID header)
     deriv_redirect_uri: str = "http://localhost:5173/auth/callback"
+    deriv_api_token: str = ""          # Personal Access Token (PAT) for dev/direct auth
 
     # Affiliate tracking (from Deriv partner dashboard)
     affiliate_id: str = ""             # e.g. CU303219

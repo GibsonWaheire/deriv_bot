@@ -35,6 +35,7 @@ class BotStartRequest(BaseModel):
     max_daily_loss_pct: float = 20.0
     stake_strategy: str = "flat"    # "flat" or "martingale"
     starting_balance: float = 1000.0
+    max_consecutive_losses: int = 0  # 0 = disabled
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ async def bot_start(body: BotStartRequest, user: dict = Depends(get_current_user
         max_daily_loss_pct=body.max_daily_loss_pct,
         stake_strategy=body.stake_strategy,  # type: ignore[arg-type]
         starting_balance=body.starting_balance,
+        max_consecutive_losses=body.max_consecutive_losses,
     )
     session = BotSession(account_id, ws, config)
     _sessions[account_id] = session
