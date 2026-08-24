@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '@/store/authStore'
 import type { BotStatus, BotLogEntry } from '@/types'
@@ -147,8 +147,6 @@ export default function Auto() {
   const [startBalance, setStartBalance] = useState(1000)
   const [maxConsecLosses, setMaxConsecLosses] = useState(0)
 
-  const logEndRef = useRef<HTMLDivElement>(null)
-
   // Poll bot status every 2s when page is open
   const { data: bot } = useQuery<BotStatus>({
     queryKey: ['bot-status'],
@@ -169,11 +167,6 @@ export default function Auto() {
       window.dispatchEvent(new CustomEvent('dst:balance', { detail: bot.current_balance }))
     }
   }, [bot?.current_balance])
-
-  // Auto-scroll log
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [bot?.log?.length])
 
   const isRunning = bot?.status === 'running'
   const isPaused  = bot?.status === 'paused'
@@ -447,20 +440,19 @@ export default function Auto() {
           </div>
         )}
 
-        {/* Decision log */}
+        {/* Decision log — newest first */}
         {bot && bot.log && bot.log.length > 0 && (
           <div className="flex-1 bg-surface-2 rounded-lg border border-border flex flex-col min-h-0">
             <div className="px-4 py-2 border-b border-border text-xs font-semibold text-ink-muted uppercase tracking-wider shrink-0">
               Decision Log
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-2 space-y-0.5 font-mono">
-              {bot.log.map((entry, i) => (
+              {[...bot.log].reverse().map((entry, i) => (
                 <div key={i} className="flex items-start gap-3 py-0.5">
                   <span className="text-[10px] text-ink-muted shrink-0 pt-px">{fmtTime(entry.time)}</span>
                   <span className={`text-xs ${logColor(entry)}`}>{entry.message}</span>
                 </div>
               ))}
-              <div ref={logEndRef} />
             </div>
           </div>
         )}
