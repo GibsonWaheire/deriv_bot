@@ -1,13 +1,18 @@
+import logging
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api import auth, health
 from app.api import trade, bot, affiliate
 from app.core.ws_manager import broadcaster, ws_signals_endpoint
 from app.core.database import engine, Base
 import app.models.affiliate  # noqa: F401 — register ORM models
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -17,8 +22,7 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"DB init skipped (non-fatal): {e}")
+        logger.warning(f"DB init skipped (non-fatal): {e}")
 
     # Start the Deriv public WS broadcaster
     await broadcaster.start()
@@ -26,6 +30,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Digit Strategy Terminal API", version="1.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return JSON instead of plain-text 500."""
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)[:300]}"},
+    )
 
 app.add_middleware(
     CORSMiddleware,

@@ -27,21 +27,53 @@ _trading_ws: dict[str, DerivWS] = {}
 
 
 async def _get_ws(account_id: str) -> DerivWS:
-    """Return a live trading WS for this account (OTP-based)."""
+    """
+    Return a live trading WS for this account (OTP-based).
+    If the stored OTP URL has expired, re-fetches a fresh one using the
+    cached access_token before raising an error.
+    """
     ws = _trading_ws.get(account_id)
     if ws and ws.connected:
         return ws
+
     redis = get_redis()
     cached = await redis.get(f"otp:{account_id}")
     if not cached:
         raise HTTPException(
             status_code=401,
-            detail="No trading session — log in with a Deriv API token or via OAuth",
+            detail="Session expired — please log in again",
         )
-    data = json.loads(cached)
-    ws = await connect_trading_ws(data["ws_url"])
-    _trading_ws[account_id] = ws
-    return ws
+
+    try:
+        data = json.loads(cached)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=401, detail="Session corrupted — please log in again")
+
+    # Try connecting with the cached OTP URL
+    try:
+        ws = await connect_trading_ws(data["ws_url"])
+        _trading_ws[account_id] = ws
+        return ws
+    except Exception as first_err:
+        logger.warning(f"OTP WS connect failed for {account_id}: {first_err} — re-fetching OTP URL")
+
+    # OTP URL likely expired — re-fetch using stored access_token
+    access_token = data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Session expired — please log in again")
+
+    try:
+        from app.services.auth_service import get_otp_ws_url
+        new_url = await get_otp_ws_url(account_id, access_token)
+        await redis.setex(
+            f"otp:{account_id}", 3600,
+            json.dumps({"ws_url": new_url, "access_token": access_token}),
+        )
+        ws = await connect_trading_ws(new_url)
+        _trading_ws[account_id] = ws
+        return ws
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Deriv connection failed: {e}")
 
 
 # ---------------------------------------------------------------------------
