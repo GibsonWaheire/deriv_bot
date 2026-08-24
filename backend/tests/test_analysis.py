@@ -80,9 +80,11 @@ class TestExtractSignals:
                 )
 
     def test_no_signals_below_55(self):
+        # DIGITMATCH precision signals have honest low confidence (~10-35% base rate)
         signals = extract_signals("1HZ100V", DIGITS_100, PRICES_100)
         for s in signals:
-            assert s.confidence >= 0.55
+            if s.tier != "precision":
+                assert s.confidence >= 0.55
 
     def test_too_few_digits_returns_empty(self):
         signals = extract_signals("1HZ100V", DIGITS_100[:10], PRICES_100[:10])
@@ -100,20 +102,21 @@ class TestExtractSignals:
 
 class TestScoreDigitMatch:
     def test_returns_10_entries(self):
-        matrix = build_transition_matrix(DIGITS_100)
-        scores = score_digit_match(DIGITS_100, matrix)
+        scores = score_digit_match(DIGITS_100)
         assert len(scores) == 10
 
     def test_sorted_desc(self):
-        matrix = build_transition_matrix(DIGITS_100)
-        scores = score_digit_match(DIGITS_100, matrix)
+        scores = score_digit_match(DIGITS_100)
         for i in range(len(scores) - 1):
             assert scores[i]["composite"] >= scores[i + 1]["composite"]
 
     def test_digits_in_range(self):
-        matrix = build_transition_matrix(DIGITS_100)
-        scores = score_digit_match(DIGITS_100, matrix)
+        scores = score_digit_match(DIGITS_100)
         assert {s["digit"] for s in scores} == set(range(10))
+
+    def test_no_markov_prob_key(self):
+        scores = score_digit_match(DIGITS_100)
+        assert "markov_prob" not in scores[0]  # Markov removed
 
 
 class TestScoreEvenOdd:

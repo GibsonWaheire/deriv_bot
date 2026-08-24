@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.services.analysis import Signal, extract_signals, build_transition_matrix, score_digit_match, score_digit_differs, _grade
+from app.services.analysis import Signal, extract_signals, build_transition_matrix, score_digit_match, score_digit_differs, score_no_repeat, _grade, _symbol_name
 from app.services.timing import estimate_tick_interval, timing_info
 from app.services.ai_explainer import explain_signal
 from app.services.deriv_client import DerivWS, fetch_tick_history, measure_rtt
@@ -176,54 +176,70 @@ class SignalBroadcaster:
                     "refreshes_in": ANALYSIS_EVERY_N_TICKS - (n % ANALYSIS_EVERY_N_TICKS),
                 })
 
-            # Per-tick refresh for Markov-sensitive signals (DIGITMATCH + DIGITDIFF)
+            # Per-tick refresh for time-sensitive signals
             elif symbol in self._matrices and self._digits[symbol]:
-                from app.services.analysis import MIN_DIGITMATCH_COMPOSITE
+                from app.services.analysis import MIN_DIGITMATCH_COMPOSITE, MIN_DIGITDIFF_MARKOV
                 digits = self._digits[symbol]
                 matrix = self._matrices[symbol]
                 fired = time.time()
 
-                # DIGITMATCH refresh
-                scores = score_digit_match(digits, matrix)
-                best = scores[0]
-                if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
-                    confidence = min(0.50 + best["composite"] * 1.5, 0.95)
-                    grade = _grade(confidence)
-                    if grade:
+                # No-repeat DIGITDIFF — barrier = current last digit, updated every tick
+                nr = score_no_repeat(digits)
+                if nr:
+                    nr_dict = {
+                        "symbol": symbol,
+                        "name": _symbol_name(symbol),
+                        "strategy": "no_repeat",
+                        "contract_type": "DIGITDIFF",
+                        "barrier": str(nr["digit"]),
+                        "tier": "medium",
+                        "confidence": nr["win_probability"],
+                        "edge": round(nr["win_probability"] - 0.5, 4),
+                        "grade": "A",
+                        "duration": 1,
+                        "fired_at": fired,
+                        "meta": nr,
+                    }
+                    # Keep _last_signals fresh so bot always has current last digit
+                    existing = [s for s in self._last_signals.get(symbol, []) if s.get("strategy") != "no_repeat"]
+                    self._last_signals[symbol] = existing + [nr_dict]
+                    await self._broadcast({"type": "digit_tick", **nr_dict})
+
+                # DIGITMATCH refresh — JD symbols only, gap+frequency scorer
+                if symbol.startswith("JD"):
+                    scores = score_digit_match(digits)
+                    best = scores[0]
+                    if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
+                        grade = "A" if best["composite"] >= 0.55 else "B"
+                        confidence = round(min(0.6 * best["gap_score"] + 0.4 * (best["frequency"] + best["freq_deficit"]), 0.35), 4)
                         await self._broadcast({
                             "type": "digit_tick",
                             "contract_type": "DIGITMATCH",
                             "symbol": symbol,
                             "tier": "precision",
                             "barrier": str(best["digit"]),
-                            "confidence": round(confidence, 4),
-                            "edge": round(confidence - 0.5, 4),
+                            "confidence": confidence,
+                            "edge": round(confidence - 0.10, 4),
                             "grade": grade,
-                            "meta": {
-                                "digit": best["digit"],
-                                "markov_prob": best["markov_prob"],
-                                "frequency": best["frequency"],
-                                "freq_deficit": best["freq_deficit"],
-                                "gap_score": best["gap_score"],
-                                "last_digit": digits[-1],
-                            },
+                            "meta": best,
                             "fired_at": fired,
                         })
 
-                # DIGITDIFF refresh
+                # Markov-skew DIGITDIFF refresh
                 dd = score_digit_differs(digits, matrix)
-                await self._broadcast({
-                    "type": "digit_tick",
-                    "contract_type": "DIGITDIFF",
-                    "symbol": symbol,
-                    "tier": "medium",
-                    "barrier": str(dd["digit"]),
-                    "confidence": dd["win_probability"],
-                    "edge": round(dd["win_probability"] - 0.5, 4),
-                    "grade": "A",
-                    "meta": dd,
-                    "fired_at": fired,
-                })
+                if dd["markov_prob"] <= MIN_DIGITDIFF_MARKOV:
+                    await self._broadcast({
+                        "type": "digit_tick",
+                        "contract_type": "DIGITDIFF",
+                        "symbol": symbol,
+                        "tier": "medium",
+                        "barrier": str(dd["digit"]),
+                        "confidence": dd["win_probability"],
+                        "edge": round(dd["win_probability"] - 0.5, 4),
+                        "grade": "A",
+                        "meta": dd,
+                        "fired_at": fired,
+                    })
 
         return on_tick
 

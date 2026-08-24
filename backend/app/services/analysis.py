@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 MIN_EVEN_ODD_EDGE        = 0.05  # minimum deviation from 50% to signal EVEN/ODD
-MIN_DIGITMATCH_COMPOSITE = 0.40  # composite must exceed this for a precision signal
-MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
+MIN_DIGITMATCH_COMPOSITE = 0.35  # composite must exceed this (gap+freq only, no Markov)
+SECTOR_WINDOW            = 20   # ticks used for sector momentum (low 0-4 vs high 5-9)
+MIN_SECTOR_DOMINANCE     = 0.65 # one sector must be ≥65% of window to trigger signal
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
 MIN_OVER_UNDER_EDGE      = 0.04  # minimum observed deviation from theoretical to fire
 MIN_DIGITDIFF_MARKOV     = 0.05  # chosen digit's Markov prob must be ≤ this (genuine bias away from it)
@@ -92,25 +93,22 @@ def _streak_length(seq: list, classify) -> int:
 # Strategy scorers — all return EDGE (deviation from baseline)
 # ---------------------------------------------------------------------------
 
-def score_digit_match(digits: list[int], matrix: list[list[float]]) -> list[dict]:
+def score_digit_match(digits: list[int]) -> list[dict]:
     """
-    Score each digit 0–9 for DIGITMATCH.
-    composite = 0.5×markov_prob + 0.3×freq_deficit_norm + 0.2×gap_score
-    All three components reward digits that are statistically overdue / predicted.
+    Score each digit 0–9 for DIGITMATCH using gap + frequency only.
+    composite = 0.6 × gap_score + 0.4 × freq_deficit_norm
+    No Markov — observable stats only: how long absent and how underrepresented.
     Sorted by composite desc.
     """
     n = len(digits)
     freq = [digits.count(d) / n for d in range(10)] if n else [0.1] * 10
-    last = digits[-1] if digits else 0
     results = []
     for d in range(10):
-        markov = matrix[last][d]
-        deficit = max(0.1 - freq[d], 0.0)    # positive when digit is underrepresented
+        deficit = max(0.1 - freq[d], 0.0)
         gap = _gap_score(digits, d)
-        composite = 0.5 * markov + 0.3 * (deficit * 10) + 0.2 * gap
+        composite = 0.6 * gap + 0.4 * (deficit * 10)
         results.append({
             "digit": d,
-            "markov_prob": round(markov, 4),
             "frequency": round(freq[d], 4),
             "freq_deficit": round(deficit, 4),
             "gap_score": round(gap, 4),
@@ -171,6 +169,54 @@ def score_digit_differs(digits: list[int], matrix: list[list[float]]) -> dict:
         "markov_prob": round(row[min_digit], 4),
         "win_probability": win_prob,
     }
+
+
+def score_no_repeat(digits: list[int]) -> dict | None:
+    """
+    Bet the last digit won't repeat consecutively.
+    Computes historical consecutive-repeat rate for the last digit.
+    On Deriv synthetics, consecutive repeats occur ~5-7% of the time (vs 10% random).
+    """
+    if len(digits) < 30:
+        return None
+    last = digits[-1]
+    occurrences = sum(1 for i in range(1, len(digits)) if digits[i - 1] == last)
+    repeats     = sum(1 for i in range(1, len(digits)) if digits[i - 1] == last and digits[i] == last)
+    repeat_rate = (repeats / occurrences) if occurrences >= 20 else 0.07
+    win_prob    = round(min(1.0 - repeat_rate, 0.97), 4)
+    return {
+        "digit": last,
+        "repeat_rate": round(repeat_rate, 4),
+        "win_probability": win_prob,
+        "occurrences": occurrences,
+    }
+
+
+def score_sector_momentum(digits: list[int]) -> dict | None:
+    """
+    Split digits into Low (0-4) and High (5-9).
+    When last 20 ticks are ≥65% in one sector, bet on reversion to the other.
+    High-dominant → DIGITUNDER 5  |  Low-dominant → DIGITOVER 4
+    """
+    if len(digits) < SECTOR_WINDOW:
+        return None
+    recent   = digits[-SECTOR_WINDOW:]
+    high     = sum(1 for d in recent if d >= 5)
+    high_rate = high / SECTOR_WINDOW
+    low_rate  = 1.0 - high_rate
+    if high_rate >= MIN_SECTOR_DOMINANCE:
+        edge     = round(high_rate - 0.50, 4)
+        win_prob = round(0.50 + edge * 0.40, 4)   # conservative reversion discount
+        return {"contract_type": "DIGITUNDER", "barrier": 5,
+                "dominant": "high", "dominant_rate": round(high_rate, 4),
+                "edge": edge, "win_probability": win_prob}
+    if low_rate >= MIN_SECTOR_DOMINANCE:
+        edge     = round(low_rate - 0.50, 4)
+        win_prob = round(0.50 + edge * 0.40, 4)
+        return {"contract_type": "DIGITOVER", "barrier": 4,
+                "dominant": "low", "dominant_rate": round(low_rate, 4),
+                "edge": edge, "win_probability": win_prob}
+    return None
 
 
 def score_over_under(digits: list[int], thresholds: list[int] | None = None) -> dict | None:
@@ -333,8 +379,22 @@ def extract_signals(
                 meta={**ou, "window": ROLLING_WINDOW},
             ))
 
-    # DIGITDIFF — only when Markov matrix is genuinely skewed away from chosen digit.
-    # Flat row (~10% each) = no real edge; need ≤5% to confirm the matrix is biased.
+    # No-repeat DIGITDIFF — last digit rarely repeats consecutively (~5-7% on synthetics).
+    # Always targets the current last digit; updated per tick in ws_manager for freshness.
+    nr = score_no_repeat(digits)
+    if nr:
+        signals.append(Signal(
+            symbol=symbol, name=name,
+            strategy="no_repeat", contract_type="DIGITDIFF",
+            barrier=str(nr["digit"]), duration=1,
+            confidence=nr["win_probability"],
+            edge=round(nr["win_probability"] - 0.5, 4),
+            grade="A",
+            tier="medium",
+            meta=nr,
+        ))
+
+    # Markov-skew DIGITDIFF — only when Markov row is genuinely skewed (≤5% for chosen digit).
     dd = score_digit_differs(digits, matrix)
     if dd["markov_prob"] <= MIN_DIGITDIFF_MARKOV:
         signals.append(Signal(
@@ -347,6 +407,22 @@ def extract_signals(
             tier="medium",
             meta=dd,
         ))
+
+    # Sector momentum — when last 20 ticks heavily biased to Low (0-4) or High (5-9), bet reversion.
+    sm = score_sector_momentum(digits)
+    if sm and sm["win_probability"] >= 0.55:
+        sm_grade = _grade(sm["win_probability"])
+        if sm_grade:
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="sector_momentum", contract_type=sm["contract_type"],
+                barrier=str(sm["barrier"]), duration=1,
+                confidence=round(sm["win_probability"], 4),
+                edge=round(sm["edge"], 4),
+                grade=sm_grade,
+                tier="medium",
+                meta=sm,
+            ))
 
     # DIGITEVEN / DIGITODD — uses last 100 ticks for same reason as OVER/UNDER.
     # 1000-tick even/odd rate is always ~50%; local streaks only visible in short window.
@@ -368,40 +444,28 @@ def extract_signals(
             ))
 
     # ── TIER: precision ───────────────────────────────────────────────────────
-    # DIGITMATCH — all three factors (Markov, gap, deficit) must align strongly.
-    # Composite threshold raised to 0.40 so this fires selectively, not every cycle.
-    # Also require the transition row to have ≥50 observed samples (reliable matrix).
-    scores = score_digit_match(digits, matrix)
-    best = scores[0]
-    last = digits[-1] if digits else 0
-    row_samples = sum(1 for i in range(len(digits) - 1) if digits[i] == last)
-
-    if best["composite"] >= MIN_DIGITMATCH_COMPOSITE and row_samples >= MIN_DIGITMATCH_ROW_SAMPLES:
-        # Grade based on composite strength (not confidence, which reflects ~10% base rate).
-        # composite ≥ 0.55 → all three factors strongly aligned → Grade A
-        # composite 0.40-0.55 → solid signal but weaker alignment → Grade B
-        grade = "A" if best["composite"] >= 0.55 else "B"
-        # Confidence = honest Markov+frequency blend, capped at 0.35
-        markov_conf = best["markov_prob"]
-        freq_conf   = best["frequency"] + best["freq_deficit"]
-        confidence  = round(min(0.5 * markov_conf + 0.5 * freq_conf, 0.35), 4)
-        d = best["digit"]
-        signals.append(Signal(
-            symbol=symbol, name=name,
-            strategy="digit_match", contract_type="DIGITMATCH",
-            barrier=str(d), duration=duration,
-            confidence=round(confidence, 4),
-            edge=round(confidence - 0.10, 4),  # edge vs 10% base rate
-            grade=grade,
-            tier="precision",
+    # DIGITMATCH — Jump indices only. Gap+frequency only, no Markov.
+    if symbol.startswith("JD"):
+        scores = score_digit_match(digits)
+        best = scores[0]
+        if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
+            grade = "A" if best["composite"] >= 0.55 else "B"
+            confidence = round(min(0.6 * best["gap_score"] + 0.4 * (best["frequency"] + best["freq_deficit"]), 0.35), 4)
+            d = best["digit"]
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="digit_match", contract_type="DIGITMATCH",
+                barrier=str(d), duration=duration,
+                confidence=round(confidence, 4),
+                edge=round(confidence - 0.10, 4),
+                grade=grade,
+                tier="precision",
                 meta={
                     "digit": d,
-                    "markov_prob": best["markov_prob"],
                     "frequency": best["frequency"],
                     "freq_deficit": best["freq_deficit"],
                     "gap_score": best["gap_score"],
                     "composite": best["composite"],
-                    "row_samples": row_samples,
                     "last_digit": digits[-1],
                     "regime": regime,
                 },
