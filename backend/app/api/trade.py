@@ -157,6 +157,19 @@ async def sell(body: SellRequest, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=504, detail="Deriv sell timed out")
 
 
+@router.get("/balance")
+async def live_balance(user: dict = Depends(get_current_user)):
+    """Fetch live account balance from Deriv."""
+    ws = await _get_ws(user["deriv_account_id"])
+    try:
+        msg = await ws.send({"balance": 1})
+        if "error" in msg:
+            raise HTTPException(status_code=400, detail=msg["error"]["message"])
+        return {"balance": float(msg["balance"]["balance"]), "currency": msg["balance"]["currency"]}
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Deriv balance timed out")
+
+
 @router.get("/history")
 async def history(
     limit: int = 25,
