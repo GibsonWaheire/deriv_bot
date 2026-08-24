@@ -51,10 +51,7 @@ export default function Sidebar({
       <nav className="p-2 border-b border-border">
         {[
           { to: '/dashboard', label: 'Dashboard' },
-          { to: '/journal', label: 'Journal' },
           { to: '/auto', label: 'Auto Bot' },
-          { to: '/admin/affiliate', label: 'Affiliate' },
-          { to: '/settings', label: 'Settings' },
         ].map(({ to, label }) => (
           <Link
             key={to}
@@ -72,20 +69,7 @@ export default function Sidebar({
 
       {/* Connection block */}
       <div className="p-3 border-b border-border space-y-3">
-        <div className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">Connection</div>
-
-        <div className="space-y-1">
-          <label className="text-xs text-ink-muted">History Depth</label>
-          <select
-            value={histCount}
-            onChange={e => onHistCountChange(Number(e.target.value))}
-            className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-          >
-            <option value={2000}>2,000 ticks</option>
-            <option value={4000}>4,000 ticks</option>
-            <option value={5000}>5,000 ticks (max)</option>
-          </select>
-        </div>
+        <div className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">Dashboard Signals</div>
 
         <div className="space-y-1">
           <label className="text-xs text-ink-muted">Instruments</label>

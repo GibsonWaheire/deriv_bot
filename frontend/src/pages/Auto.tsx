@@ -233,119 +233,86 @@ export default function Auto() {
 
       {/* Left — Config form (hidden when bot is active) */}
       {!isActive && (
-        <div className="w-72 shrink-0 flex flex-col gap-4">
-          <div className="bg-surface-2 rounded-lg border border-border p-4 space-y-4">
-            <div className="text-xs font-semibold text-ink-muted uppercase tracking-wider">Bot Configuration</div>
+        <div className="w-64 shrink-0 flex flex-col overflow-y-auto">
+          <div className="bg-surface-2 rounded-lg border border-border p-3 space-y-3">
+            <div className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">Bot Configuration</div>
 
-            {/* Symbols */}
+            {/* Symbols — 3-column grid */}
             <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Instruments</label>
-              <div className="space-y-0.5">
+              <label className="text-[11px] text-ink-muted">Instruments</label>
+              <div className="grid grid-cols-3 gap-0.5">
                 {SYMBOLS.map(({ value, label }) => (
-                  <label key={value} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-surface-4 cursor-pointer">
+                  <label key={value} className={`flex items-center gap-1 px-1 py-0.5 rounded cursor-pointer text-[11px] ${symbols.includes(value) ? 'text-brand-blue' : 'text-ink-muted hover:text-ink'}`}>
                     <input
                       type="checkbox"
                       checked={symbols.includes(value)}
                       onChange={() => toggleSymbol(value)}
-                      className="accent-brand-blue w-3.5 h-3.5"
+                      className="accent-brand-blue w-3 h-3 shrink-0"
                     />
-                    <span className="text-xs text-ink">{label}</span>
+                    {label}
                   </label>
                 ))}
               </div>
             </div>
 
-            {/* Stake */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Stake per trade ($)</label>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={stake}
-                onChange={e => setStake(Number(e.target.value))}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              />
+            {/* Stake + Grade in one row */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-0.5">
+                <label className="text-[11px] text-ink-muted">Stake ($)</label>
+                <input type="number" min={1} step={1} value={stake}
+                  onChange={e => setStake(Number(e.target.value))}
+                  className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none" />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[11px] text-ink-muted">Max trades/hr</label>
+                <input type="number" min={1} max={60} value={maxTrades}
+                  onChange={e => setMaxTrades(Number(e.target.value))}
+                  className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none" />
+              </div>
             </div>
 
             {/* Min grade */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Minimum signal grade</label>
-              <select
-                value={minGrade}
-                onChange={e => setMinGrade(e.target.value as 'A' | 'AB')}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              >
-                <option value="A">Grade A only (≥65% confidence)</option>
-                <option value="AB">Grade A + B (≥55% confidence)</option>
+            <div className="space-y-0.5">
+              <label className="text-[11px] text-ink-muted">Signal grade</label>
+              <select value={minGrade} onChange={e => setMinGrade(e.target.value as 'A' | 'AB')}
+                className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none">
+                <option value="A">Grade A only (≥65%)</option>
+                <option value="AB">Grade A + B (≥55%)</option>
               </select>
             </div>
 
             {/* Stake strategy */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Stake strategy</label>
-              <select
-                value={strategy}
-                onChange={e => setStrategy(e.target.value as 'flat' | 'martingale')}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              >
-                <option value="flat">Flat — same stake every trade</option>
-                <option value="martingale">Martingale — double after loss (max 4×)</option>
+            <div className="space-y-0.5">
+              <label className="text-[11px] text-ink-muted">Stake strategy</label>
+              <select value={strategy} onChange={e => setStrategy(e.target.value as 'flat' | 'martingale')}
+                className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none">
+                <option value="flat">Flat stake</option>
+                <option value="martingale">Martingale (2× after loss)</option>
               </select>
             </div>
 
-            {/* Max trades/hour */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Max trades per hour</label>
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={maxTrades}
-                onChange={e => setMaxTrades(Number(e.target.value))}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              />
-            </div>
-
-            {/* Max daily loss */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Max daily loss (%)</label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={maxLoss}
-                onChange={e => setMaxLoss(Number(e.target.value))}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              />
-            </div>
-
-            {/* Consecutive loss limit */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Consecutive loss limit (0 = disabled)</label>
-              <input
-                type="number"
-                min={0}
-                max={20}
-                value={maxConsecLosses}
-                onChange={e => setMaxConsecLosses(Number(e.target.value))}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              />
-              {maxConsecLosses === 0 && (
-                <div className="text-[10px] text-ink-muted">Bot keeps trading regardless of losses</div>
-              )}
+            {/* Max daily loss + Consecutive loss limit */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-0.5">
+                <label className="text-[11px] text-ink-muted">Max loss (%)</label>
+                <input type="number" min={1} max={100} value={maxLoss}
+                  onChange={e => setMaxLoss(Number(e.target.value))}
+                  className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none" />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[11px] text-ink-muted">Consec losses (0=∞)</label>
+                <input type="number" min={0} max={20} value={maxConsecLosses}
+                  onChange={e => setMaxConsecLosses(Number(e.target.value))}
+                  className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none" />
+              </div>
             </div>
 
             {/* Starting balance */}
-            <div className="space-y-1">
-              <label className="text-xs text-ink-muted">Account balance ($) — for loss limit</label>
-              <input
-                type="number"
-                min={1}
-                value={startBalance}
+            <div className="space-y-0.5">
+              <label className="text-[11px] text-ink-muted">Account balance ($)</label>
+              <input type="number" min={1} value={startBalance}
                 onChange={e => setStartBalance(Number(e.target.value))}
-                className="w-full px-2 py-1.5 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none focus:border-border-2"
-              />
+                className="w-full px-2 py-1 rounded border border-border bg-surface-4 text-ink text-xs focus:outline-none" />
             </div>
 
             {error && (
