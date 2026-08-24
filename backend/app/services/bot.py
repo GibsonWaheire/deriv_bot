@@ -1,12 +1,13 @@
 """
-Automation Bot — three-tier rotating strategy.
+Automation Bot — edge-only rotating strategy.
 
-Tier cycle: safe → medium → safe → precision → (repeat)
-  safe      — DIGITOVER 2, DIGITUNDER 7 (~70% win rate, tiny payout)
-  medium    — DIGITDIFF, DIGITEVEN/ODD (~90% win rate, moderate payout)
-  precision — DIGITMATCH only (strict Markov composite, high payout required)
+Tier cycle: medium → medium → medium → precision → (repeat)
+  medium    — DIGITDIFF (anchor, always on), DIGITEVEN/ODD, mid-range OVER/UNDER
+              (edge-conditional), DIGITOVER 2 / DIGITUNDER 7 (edge-conditional)
+  precision — DIGITMATCH only (strict Markov composite + row samples)
 
-After each loss: insert an extra 'safe' trade at front of queue.
+After each loss: insert an extra 'medium' trade (DIGITDIFF anchor) before continuing.
+No dedicated 'safe' slot — safe signals compete in the medium pool on edge only.
 
 Hard stops (require explicit user resume):
   - Daily loss > max_daily_loss_pct of starting balance
@@ -31,13 +32,14 @@ logger = logging.getLogger(__name__)
 
 # Minimum payout % per tier
 TIER_MIN_PAYOUT = {
-    "safe":      1.0,    # DIGITOVER/UNDER pay ~2-5%, accept anything positive
+    "safe":      30.0,   # DIGITOVER 2 / DIGITUNDER 7 fair payout ~43% — skip if <30%
     "medium":    8.0,    # DIGITDIFF/EVEN/ODD/mid-OVER/UNDER pay ~8-130%
     "precision": 400.0,  # DIGITMATCH ~15% win rate → need ≥400% payout to be +EV
 }
 
-# Default rotation cycle (repeats indefinitely)
-TIER_CYCLE = ["safe", "medium", "safe", "precision"]
+# DIGITDIFF-heavy cycle: 3 medium per precision, no dedicated safe slot
+# Safe signals compete in medium pool when edge is detected
+TIER_CYCLE = ["medium", "medium", "medium", "precision"]
 
 MAX_LOG_ENTRIES = 200
 MAX_MARTINGALE_MULT = 4
@@ -193,13 +195,13 @@ class BotSession:
         return self._tier_queue[0]
 
     def _advance_tier(self, won: bool):
-        """Pop current tier. On loss insert an extra safe trade as buffer."""
+        """Pop current tier. On loss insert an extra medium (DIGITDIFF) trade as buffer."""
         if self._tier_queue:
             self._tier_queue.popleft()
         if not self._tier_queue:
             self._tier_queue.extend(TIER_CYCLE)
         if not won:
-            self._tier_queue.appendleft("safe")
+            self._tier_queue.appendleft("medium")
 
     # ------------------------------------------------------------------
     # Signal selection

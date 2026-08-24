@@ -1,12 +1,13 @@
 """
-Analysis engine — three-tier signal extraction.
+Analysis engine — edge-only signal extraction.
 
-Tier "safe"      — DIGITOVER 2, DIGITUNDER 7: ~70% win rate, always broadcast.
-Tier "medium"    — DIGITDIFF, DIGITEVEN/ODD: ~88-92% win rate, signal-based.
-Tier "precision" — DIGITMATCH only: strict Markov composite, high payout needed.
+Tier "safe"      — DIGITOVER 2 / DIGITUNDER 7: only when rolling-window
+                   observed rate beats theoretical by ≥4% (not always-on).
+Tier "medium"    — DIGITDIFF (always), DIGITEVEN/ODD, mid-range OVER/UNDER
+                   (when rolling window shows ≥4% edge).
+Tier "precision" — DIGITMATCH: strict Markov composite + row sample count.
 
-Note: RISE/FALL removed — synthetic indices are random by design; streak
-reversal on a random process is noise with no predictive value.
+All signals require a detected edge. Trading without edge = negative EV.
 """
 from __future__ import annotations
 
@@ -19,9 +20,10 @@ MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
 MIN_OVER_UNDER_EDGE      = 0.04  # minimum observed deviation from theoretical to fire
 ROLLING_WINDOW           = 100   # ticks used for EVEN/ODD and OVER/UNDER (short = catches local momentum)
-SAFE_SIGNALS = [
-    ("DIGITOVER",  2, 0.70),   # P(digit > 2) = 70%
-    ("DIGITUNDER", 7, 0.70),   # P(digit < 7) = 70%
+# Safe barriers — only traded when rolling-window observed rate beats theoretical
+SAFE_BARRIERS = [
+    ("DIGITOVER",  2, 0.70),   # theoretical 70% — only fire when observed ≥ 74%
+    ("DIGITUNDER", 7, 0.70),   # theoretical 70% — only fire when observed ≥ 74%
 ]
 # Mid-range barriers: theoretical win rate 40-60%, higher payouts
 MID_BARRIERS = [3, 4, 5, 6]   # OVER: 60/50/40/30%  UNDER: 30/40/50/60%
@@ -289,19 +291,27 @@ def extract_signals(
     signals: list[Signal] = []
 
     # ── TIER: safe ────────────────────────────────────────────────────────────
-    # DIGITOVER 2 and DIGITUNDER 7 — always broadcast, no edge required.
-    # Confidence = base win rate so the UI can show it clearly.
-    for ct, barrier, base_rate in SAFE_SIGNALS:
-        signals.append(Signal(
-            symbol=symbol, name=name,
-            strategy="safe", contract_type=ct,
-            barrier=str(barrier), duration=1,  # 1-tick contracts
-            confidence=base_rate,
-            edge=round(base_rate - 0.5, 4),
-            grade="A",
-            tier="safe",
-            meta={"theoretical": base_rate, "barrier": barrier},
-        ))
+    # DIGITOVER 2 / DIGITUNDER 7 — only when rolling window shows ≥4% edge
+    # over theoretical. Trading them blindly is negative EV (Deriv house edge).
+    for ct, barrier, theoretical in SAFE_BARRIERS:
+        n_recent = len(recent)
+        if ct == "DIGITOVER":
+            observed = sum(1 for d in recent if d > barrier) / n_recent
+        else:
+            observed = sum(1 for d in recent if d < barrier) / n_recent
+        edge = observed - theoretical
+        if edge >= MIN_OVER_UNDER_EDGE:
+            confidence = round(min(observed, 0.92), 4)
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="safe", contract_type=ct,
+                barrier=str(barrier), duration=1,
+                confidence=confidence,
+                edge=round(edge, 4),
+                grade="A",
+                tier="safe",
+                meta={"theoretical": theoretical, "observed": observed, "edge": edge, "window": ROLLING_WINDOW},
+            ))
 
     # ── TIER: medium ──────────────────────────────────────────────────────────
     # Dynamic OVER/UNDER — uses last 100 ticks so local momentum shows up.
