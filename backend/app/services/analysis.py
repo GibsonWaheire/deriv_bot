@@ -16,10 +16,13 @@ from typing import Literal
 MIN_EVEN_ODD_EDGE        = 0.05  # minimum deviation from 50% to signal EVEN/ODD
 MIN_DIGITMATCH_COMPOSITE = 0.22  # composite must exceed this for a precision signal
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
+MIN_OVER_UNDER_EDGE      = 0.07  # minimum observed deviation from theoretical to fire
 SAFE_SIGNALS = [
     ("DIGITOVER",  2, 0.70),   # P(digit > 2) = 70%
     ("DIGITUNDER", 7, 0.70),   # P(digit < 7) = 70%
 ]
+# Mid-range barriers: theoretical win rate 40-60%, higher payouts
+MID_BARRIERS = [3, 4, 5, 6]   # OVER: 60/50/40/30%  UNDER: 30/40/50/60%
 
 
 @dataclass
@@ -165,17 +168,17 @@ def score_digit_differs(digits: list[int], matrix: list[list[float]]) -> dict:
     }
 
 
-def score_over_under(digits: list[int]) -> dict | None:
+def score_over_under(digits: list[int], thresholds: list[int] | None = None) -> dict | None:
     """
-    For each threshold 1–8, compute observed vs theoretical win rate.
+    For each threshold, compute observed vs theoretical win rate.
     Only returns a result when the deviation is ≥ MIN_OVER_UNDER_EDGE.
 
     Theoretical:
       DIGITOVER t: P(d > t) = (9 − t) / 10
       DIGITUNDER t: P(d < t) = t / 10   (note: strict less-than)
 
-    This eliminates 'always-high' signals like UNDER 8 (theoretical 80%)
-    unless the last 1000 ticks show > 90%.
+    thresholds: which barriers to scan (default 1-8).
+      Pass MID_BARRIERS to find mid-range signals with higher payouts.
     """
     if not digits:
         return None
@@ -183,7 +186,7 @@ def score_over_under(digits: list[int]) -> dict | None:
     best: dict | None = None
     best_edge = 0.0
 
-    for t in range(1, 9):
+    for t in (thresholds if thresholds is not None else range(1, 9)):
         # DIGITOVER t
         theo_over = (9 - t) / 10
         obs_over  = sum(1 for d in digits if d > t) / n
@@ -298,6 +301,25 @@ def extract_signals(
         ))
 
     # ── TIER: medium ──────────────────────────────────────────────────────────
+    # Dynamic OVER/UNDER — mid-range barriers (3-6), only when observed edge ≥7%
+    # These pay 60-130% payout vs tiny payout for OVER 2 / UNDER 7.
+    ou = score_over_under(digits, thresholds=MID_BARRIERS)
+    if ou:
+        # observed win rate as confidence (already includes the edge)
+        ou_conf = min(ou["observed"], 0.90)
+        ou_grade = _grade(ou_conf)
+        if ou_grade:
+            signals.append(Signal(
+                symbol=symbol, name=name,
+                strategy="over_under", contract_type=ou["contract_type"],
+                barrier=str(ou["threshold"]), duration=1,
+                confidence=round(ou_conf, 4),
+                edge=round(ou["edge"], 4),
+                grade=ou_grade,
+                tier="medium",
+                meta=ou,
+            ))
+
     # DIGITDIFF — bet the least-Markov-likely digit won't appear (~90-93% win)
     dd = score_digit_differs(digits, matrix)
     signals.append(Signal(

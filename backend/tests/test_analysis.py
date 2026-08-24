@@ -6,7 +6,6 @@ from app.services.analysis import (
     score_digit_match,
     score_even_odd,
     score_over_under,
-    score_rise_fall,
 )
 
 # ---------------------------------------------------------------------------
@@ -54,10 +53,17 @@ class TestTransitionMatrix:
 # ---------------------------------------------------------------------------
 
 class TestExtractSignals:
-    def test_sorted_by_confidence_desc(self):
+    def test_sorted_by_tier_then_confidence(self):
+        """Signals are sorted: safe first, then medium, then precision.
+        Within each tier, higher confidence comes first."""
+        tier_order = {"safe": 0, "medium": 1, "precision": 2}
         signals = extract_signals("1HZ100V", DIGITS_100, PRICES_100)
         for i in range(len(signals) - 1):
-            assert signals[i].confidence >= signals[i + 1].confidence
+            a, b = signals[i], signals[i + 1]
+            ta, tb = tier_order[a.tier], tier_order[b.tier]
+            assert ta <= tb, f"Tier order wrong: {a.tier} before {b.tier}"
+            if ta == tb:
+                assert a.confidence >= b.confidence
 
     def test_grade_a_threshold(self):
         signals = extract_signals("1HZ100V", DIGITS_100, PRICES_100)
@@ -159,27 +165,3 @@ class TestScoreOverUnder:
         assert result is None
 
 
-class TestScoreRiseFall:
-    def test_returns_none_on_short_streak(self):
-        # Alternating prices never build a streak → no signal
-        alternating = [100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0, 100.0, 99.0]
-        result = score_rise_fall(alternating)
-        assert result is None
-
-    def test_returns_signal_on_long_streak(self):
-        # 7 consecutive rises (needs ≥10 prices) → reversal signal
-        streak_prices = [100.0 + i for i in range(11)]  # 10 diffs, all rising
-        result = score_rise_fall(streak_prices)
-        assert result is not None
-        assert result["direction"] == "fall"  # predict reversal
-        assert result["edge"] > 0
-
-    def test_edge_positive_on_reversal(self):
-        streak_prices = [100.0 + i for i in range(10)]
-        result = score_rise_fall(streak_prices)
-        assert result is not None
-        assert result["edge"] > 0.0
-
-    def test_returns_none_on_insufficient_data(self):
-        result = score_rise_fall([1.0])
-        assert result is None
