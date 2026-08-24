@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 MIN_EVEN_ODD_EDGE        = 0.05  # minimum deviation from 50% to signal EVEN/ODD
-MIN_DIGITMATCH_COMPOSITE = 0.22  # composite must exceed this for a precision signal
+MIN_DIGITMATCH_COMPOSITE = 0.40  # composite must exceed this for a precision signal
+MIN_DIGITMATCH_ROW_SAMPLES = 50  # min ticks from last digit row to trust Markov
 MIN_STREAK_REVERSAL      = 4     # streak length for even/odd reversal bonus
 MIN_OVER_UNDER_EDGE      = 0.07  # minimum observed deviation from theoretical to fire
 SAFE_SIGNALS = [
@@ -352,21 +353,34 @@ def extract_signals(
             ))
 
     # ── TIER: precision ───────────────────────────────────────────────────────
-    # DIGITMATCH — strict composite threshold, Markov + gap + deficit all strong
+    # DIGITMATCH — all three factors (Markov, gap, deficit) must align strongly.
+    # Composite threshold raised to 0.40 so this fires selectively, not every cycle.
+    # Also require the transition row to have ≥50 observed samples (reliable matrix).
     scores = score_digit_match(digits, matrix)
     best = scores[0]
-    if best["composite"] >= MIN_DIGITMATCH_COMPOSITE:
-        confidence = min(0.50 + best["composite"] * 1.5, 0.95)
-        grade = _grade(confidence)
-        if grade:
+    last = digits[-1] if digits else 0
+    row_samples = sum(1 for i in range(len(digits) - 1) if digits[i] == last)
+
+    if best["composite"] >= MIN_DIGITMATCH_COMPOSITE and row_samples >= MIN_DIGITMATCH_ROW_SAMPLES:
+        # Confidence = blend of Markov probability + observed frequency.
+        # Base rate is 10% (1/10 digits) — we only show the genuine uplift above that.
+        markov_conf  = best["markov_prob"]                   # Markov predicted prob
+        freq_conf    = best["frequency"] + best["freq_deficit"]  # freq-adjusted
+        confidence   = round(min(0.5 * markov_conf + 0.5 * freq_conf, 0.35), 4)
+        # Boost slightly for very high composite (all factors aligned)
+        if best["composite"] >= 0.55:
+            confidence = round(min(confidence + 0.05, 0.40), 4)
+        grade = _grade(confidence) if confidence >= 0.65 else None  # must be Grade A
+        # Only emit if genuinely above random (>15%)
+        if confidence >= 0.15:
             d = best["digit"]
             signals.append(Signal(
                 symbol=symbol, name=name,
                 strategy="digit_match", contract_type="DIGITMATCH",
                 barrier=str(d), duration=duration,
                 confidence=round(confidence, 4),
-                edge=round(confidence - 0.5, 4),
-                grade=grade,
+                edge=round(confidence - 0.10, 4),  # edge vs 10% base rate
+                grade=grade or "B",
                 tier="precision",
                 meta={
                     "digit": d,
@@ -375,6 +389,7 @@ def extract_signals(
                     "freq_deficit": best["freq_deficit"],
                     "gap_score": best["gap_score"],
                     "composite": best["composite"],
+                    "row_samples": row_samples,
                     "last_digit": digits[-1],
                     "regime": regime,
                 },

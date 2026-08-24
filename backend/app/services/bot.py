@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Minimum payout % per tier
 TIER_MIN_PAYOUT = {
-    "safe":      1.0,   # DIGITOVER/UNDER pay ~2-5%, accept anything positive
-    "medium":    8.0,   # DIGITDIFF/EVEN/ODD pay ~8-15%
-    "precision": 70.0,  # DIGITMATCH only worth it at high payout
+    "safe":      1.0,    # DIGITOVER/UNDER pay ~2-5%, accept anything positive
+    "medium":    8.0,    # DIGITDIFF/EVEN/ODD/mid-OVER/UNDER pay ~8-130%
+    "precision": 400.0,  # DIGITMATCH ~15% win rate → need ≥400% payout to be +EV
 }
 
 # Default rotation cycle (repeats indefinitely)
